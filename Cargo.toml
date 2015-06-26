@@ -1,0 +1,12 @@
+[package]
+name = "bam2bedgraph"
+version = "0.1.0"
+authors = ["Ben Booth <benwbooth@gmail.com>"]
+
+[dependencies]
+argparse = "*"
+intervallum = "*"
+regex = "*"
+
+[dependencies.rust-htslib]
+git = "https://github.com/christopher-schroeder/rust-htslib.git"
