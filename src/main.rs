@@ -1,4 +1,13 @@
 use std::ascii::AsciiExt;
+use std::collections::HashMap;
+use std::io::Write;
+use std::io::stderr;
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::cmp::max;
+use std::str;
+use std::path::PathBuf;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -8,6 +17,12 @@ use regex::Regex;
 
 extern crate interval;
 use interval::interval_set::IntervalSet;
+use interval::ops::Range;
+use std::ops::Add;
+
+extern crate rust_htslib;
+use rust_htslib::bam::Reader;
+use rust_htslib::bam::Read;
 
 // void cigar2exons(vector<pair<size_t,size_t>> &exons, const vector<CigarOp> &cigar, size_t pos) {
 //   for (auto &op : cigar) {
@@ -25,44 +40,52 @@ use interval::interval_set::IntervalSet;
 //   }
 // }
 
-// string
-// open_file(int32_t read_number,
-//           string strand,
-//           string split_strand,
-//           map<string,unique_ptr<ofstream>> &fhs)
-// {
-//   string track_name = (format("%s%s%s") %
-//                        (!trackname.empty()? trackname : path{bamfile}.filename().replace_extension(path{}).native()) %
-//                        (split_read && read_number? (format(".r%s") % read_number).str() : "") %
-//                        (split_strand != "uu" && !strand.empty()? (format(".%s") % strand).str() : "")).str();
-// 
-//   string filename = (format("%s%s%s%s") %
-//                      (!out.empty()? out : path{bamfile}.replace_extension(path{}).native()) %
-//                      (split_read && read_number? (format(".r%s") % read_number).str() : "") %
-//                      (split_strand != "uu" && !strand.empty()? (format(".%s") % strand).str() : "") %
-//                      ".bedgraph").str();
-// 
-//   // initialize the file if needed
-//   if (!fhs.count(filename)) {
-//     fhs[filename] = unique_ptr<ofstream>{new ofstream{}};
-//     auto &fh = *fhs[filename];
-//     fh.exceptions(std::ios::badbit | std::ios::failbit);
-//     fh.open(filename);
-//     if (trackline) fh <<"track type=bedGraph name=\""<<track_name<<"\" description=\""<<track_name<<"\" visibility=full"<<endl;
-//   }
-//   return filename;
-// }
+fn open_file(
+    options: &Options,
+    read_number: i32,
+    strand: &str,
+    split_strand: &str,
+    fhs: &mut HashMap<String,File>)
+    -> String
+{
+    let mut prefix = PathBuf::new();
+    prefix.set_file_name(&options.bamfile);
+    prefix.set_extension("");
+    let track_name = vec!(
+        if !options.trackname.is_empty() {options.trackname.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
+        if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
+        if options.split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
+        ).connect("");
 
-// void write_chr(
-//     const RefData &chr,
-//     const map<tuple<int32_t,string>,vector<int32_t>> &histogram,
-//     map<string,unique_ptr<ofstream>> &fhs,
-//     string split_strand)
-// {
-//   for (auto& tuple : histogram) {
-//     auto read_number = std::get<0>(tuple.first);
-//     auto strand = std::get<1>(tuple.first);
-//     auto& histo = tuple.second;
+    let filename = vec!(
+        if !options.out.is_empty() {options.out.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
+        if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
+        if options.split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
+        ".bedgraph".to_string(),
+        ).connect("");
+
+    // initialize the file if needed
+    if !fhs.contains_key(&filename) {
+        let mut f = File::create(&filename).unwrap();
+        if options.trackline {
+            writeln!(f, "track type=bedGraph name=\"{}\" description=\"{}\" visibility-full", track_name, track_name).unwrap();
+        }
+        fhs.insert(filename.clone(), f);
+    }
+    filename
+}
+
+fn write_chr(
+    options: &Options,
+    chr: &(u32, String),
+    histogram: &HashMap<(i32,String),Vec<i32>>,
+    fhs: &mut HashMap<String,File>,
+    split_strand: &str)
+{
+   for (key, histo) in histogram {
+       let read_number = key.0;
+       let strand = &key.1;
+       let filename = open_file(options, read_number, strand, split_strand, fhs);
 // 
 //     string filename = open_file(read_number, strand, split_strand, fhs);
 //     auto &fh = *fhs[filename];
@@ -80,127 +103,126 @@ use interval::interval_set::IntervalSet;
 //       }
 //       start = end;
 //     }
-//   }
-// }
+   }
+}
 
 // if autostrand is set, read the input annotation file into an interval tree
-// static void readAnnotationFile(const string& autostrand, map<string,IntervalTree<int8_t>>& intervals) {
-//   if (!autostrand.empty()) {
-//     size_t chrCol=0, startCol=0, stopCol=0, strandCol=0;
-//     int base=0;
-//     boost::smatch match;
-//     if (boost::regex_search(autostrand, match, boost::regex{R"(\.([^.]+)$)"})) {
-//       string m {match[1].first, match[1].second};
-//       if (boost::regex_search(m, boost::regex{R"(^bed$)", boost::regex::icase})) {
-//         cerr << "Reading bed annotation file " << autostrand << endl;
-//         chrCol=0;
-//         startCol=1;
-//         stopCol=2;
-//         strandCol=5;
-//         base=0;
-//       }
-//       else if (boost::regex_search(m, boost::regex{R"(^(gff|gtf|gff3)$)", boost::regex::icase})) {
-//         cerr << "Reading gff annotation file " << autostrand << endl;
-//         chrCol=0;
-//         startCol=3;
-//         stopCol=4;
-//         strandCol=6;
-//         base=1;
-//       }
-//       else {
-//         throw (format("Could not recognize file extension of annotation file %s: %s") % autostrand % match[1]).str();
-//       }
-//     }
-//     ifstream annot_fh {};
-//     annot_fh.open(autostrand);
-//     if (!annot_fh) {
-//       throw (format("Could not open file for reading: %s") % autostrand).str();
-//     }
-// 
-//     map<string,vector<Interval<int8_t>>> interval_lists;
-//     string line;
-//     while (std::getline(annot_fh, line)) {
-//       if (boost::regex_search(line, boost::regex{R"(^[ ]*#)"})) {
-//         continue;
-//       }
-// 
-//       vector<string> cols;
-//       boost::algorithm::split_regex(cols, line, boost::regex{R"(\t)"});
-//       size_t max_col = std::max({chrCol, startCol, stopCol, strandCol});
-//       if (max_col < cols.size()) {
-//         string chr {cols[chrCol]};
-//         int start = std::stoi(cols[startCol]);
-//         int stop = std::stoi(cols[stopCol]);
-//         string strandStr {cols[strandCol]};
-//         int8_t strand = strandStr == "-1" || strandStr == "-"? '-' :
-//           strandStr == "1" || strandStr == "+"? '+' :
-//           '\0';
-// 
-//         if (strand != '\0') {
-//           if (!interval_lists.count(chr)) {
-//             interval_lists[chr] = vector<Interval<int8_t>>{};
-//           }
-//           interval_lists[chr].push_back(Interval<int8_t>{start-(base-1), stop, strand});
-//         }
-//       }
-//     }
-//     annot_fh.close();
-//     for (auto &i : interval_lists) {
-//       if (!intervals.count(i.first)) {
-//         intervals[i.first] = IntervalTree<int8_t>{i.second};
-//       }
-//     }
-//   }
-// }
+fn read_annotation_file(autostrand: &str, intervals: &mut HashMap<(String, char), IntervalSet<i32>>) {
+    if ! autostrand.is_empty() {
+        let mut chr_col=0;
+        let mut start_col=0;
+        let mut stop_col=0;
+        let mut strand_col=0;
+        let mut base=0;
+        for cap in Regex::new(r"\.([^.]+)$").unwrap().captures_iter(autostrand) {
+            if Regex::new(r"(?i)^bed$").unwrap().is_match(cap.at(1).unwrap_or("")) {
+                writeln!(&mut stderr(), "Reading bed annotation file {}", autostrand).unwrap();
+                chr_col = 0;
+                start_col = 1;
+                stop_col = 2;
+                strand_col = 5;
+                base = 0;
+            }
+            else if Regex::new(r"(?i)^(gff|gtf|gff3)$").unwrap().is_match(cap.at(1).unwrap_or("")) {
+                writeln!(&mut stderr(), "Reading gff annotation file {}", autostrand).unwrap();
+                chr_col = 0;
+                start_col = 3;
+                stop_col = 4;
+                strand_col = 6;
+                base = 1;
+            }
+            else {
+                panic!("Could not recognize file extension of annotation file {}: {}",
+                       autostrand, cap.at(1).unwrap_or(""));
+            }
+        }
+        let annot_fh = BufReader::new(File::open(autostrand).unwrap());
+        let comment_line = Regex::new(r"^[ ]*#").unwrap();
+        for line in annot_fh.lines() {
+            let line = line.unwrap();
+            if comment_line.is_match(&line) { continue }
+            let cols: Vec<&str> = Regex::new(r"\t").unwrap().split(&line).collect();
+            let max_col = [chr_col, start_col, stop_col, strand_col].iter().fold(0, |a, &b| max(a, b));
+            if max_col < cols.len() {
+                let chr = cols[chr_col].to_string();
+                let start = cols[start_col].trim().parse::<i32>().unwrap();
+                let stop = cols[stop_col].trim().parse::<i32>().unwrap();
+                let strand_str = cols[strand_col];
+                let strand =
+                    if strand_str == "-1" || strand_str == "-" {'-'} else
+                    if strand_str == "1" || strand_str == "+" {'+'} else {'\0'};
+                if strand != '\0' {
+                    let key = (chr, strand);
+                    let interval = IntervalSet::new(start-(base-1), stop);
+                    if !intervals.contains_key(&key) {
+                        intervals.insert(key, interval);
+                    }
+                    else {
+                        let ref intervals = intervals[&key];
+                        intervals.add(interval);
+                    }
+                }
+            }
+        }
+    }
+}
 
-// fn 
-// analyzeBam(string split_strand,
-//            bool autostrandPass,
-//            map<string,IntervalTree<int8_t>>& intervals)
-// {
-//   BamReader bam;
-//   if (!bam.Open(bamfile)) {
-//     throw (format("Could not open input BAM file ") % bamfile).str();
-//   }
-//   auto header = bam.GetHeader();
-//   auto refs = bam.GetReferenceData();
-//   if (fixchr) {
-//     for (auto& ref : refs) {
-//       ref.RefName = !boost::regex_search(ref.RefName, boost::regex{R"(^(chr|Zv9_))"})?
-//         string("chr")+ref.RefName :
-//         ref.RefName;
-//     }
-//   }
-// 
-//   if (autostrandPass) {
-//     cerr << "Running strand detection phase on " << bamfile << endl;
-//   }
-//   else {
-//     cerr << "Building histograms for " << bamfile << endl;
-//   }
-// 
-//   // build a lookup map for the refseqs
-//   map<string,size_t> refmap;
-//   for (size_t i=0; i<refs.size(); ++i) {
-//     refmap[refs[i].RefName] = i;
-//   }
-// 
-//   int32_t lastchr = -1;
-//   map<string,unique_ptr<ofstream>> fhs;
-//   map<tuple<int32_t,string>,vector<int32_t>> histogram;
-// 
-//   map<char,int64_t> autostrandTotals{};
-//   map<char,int64_t> autostrandTotals2{};
-//   BamAlignment read;
+fn analyze_bam(
+    options: &Options,
+    split_strand: &str,
+    autostrand_pass: bool,
+    intervals: &HashMap<(String, char), IntervalSet<i32>>)
+{
+    let bam = rust_htslib::bam::Reader::new(&options.bamfile);
+    let ref header = bam.header;
+    let mut refs: Vec<(u32, String)> = Vec::new();
+    for target_name in header.target_names() {
+        refs.push((header.tid(&target_name).unwrap(), str::from_utf8(target_name).unwrap().to_string()));
+    }
+    refs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if options.fixchr {
+        for r in &mut refs {
+            if Regex::new(r"^(chr|Zv9_)").unwrap().is_match(&r.1) {
+                let refname = r.1.to_string();
+                r.1.clear();
+                r.1.push_str(&format!("chr{}", refname));
+            }
+        }
+    }
+    if autostrand_pass {
+        writeln!(stderr(), "Running strand detection phase on {}", options.bamfile).unwrap();
+    }
+    else {
+        writeln!(stderr(), "Building histograms for {}", options.bamfile).unwrap();
+    }
+
+    // build a lookup map for the refseqs
+    let mut refmap: HashMap<String,usize> = HashMap::new();
+    for i in 0..refs.len() {
+        refmap.insert(refs[i].1.to_string(), i);
+    }
+
+    let mut lastchr: i32 = -1;
+    let mut fhs: HashMap<String, File> = HashMap::new();
+    let mut histogram: HashMap<(i32, String), Vec<i32>> = HashMap::new();
+
+    let mut autostrandTotals: HashMap<char, i64> = HashMap::new();
+    let mut autostrandTotals2: HashMap<char, i64> = HashMap::new();
+
+    let mut read = rust_htslib::bam::record::Record::new();
+    while bam.read(&mut read).is_ok() {
+        // if we've hit a new chr, write out the bedgraph data and clear the histogram
+        if lastchr == -1 || read.tid() != lastchr {
+            if !autostrand_pass && !histogram.is_empty() && lastchr != -1 {
+                write_chr(options, &refs[lastchr as usize], &histogram, &mut fhs, split_strand);
+            }
+            histogram.clear();
+            lastchr = read.tid();
+        }
+
+    }
 //   while (bam.GetNextAlignment(read)) {
-//     // if we've hit a new chr, write out the bedgraph data and clear the histogram
-//     if (lastchr == -1 || read.RefID != lastchr) {
-//       if (!autostrandPass && !histogram.empty() && lastchr != -1) {
-//         write_chr(refs[lastchr], histogram, fhs, split_strand);
-//       }
-//       histogram.clear();
-//       lastchr = read.RefID;
-//     }
 // 
 //     // skip this read if it's no good
 //     bool paired = read.IsPaired();
@@ -360,7 +382,7 @@ use interval::interval_set::IntervalSet;
 //       boost::filesystem::remove(genome_filename);
 //     }
 //   }
-// }
+}
 
 struct Options {
     split_exons: bool,
@@ -453,21 +475,20 @@ fn main() {
         panic!("Invalid value for split_strand: \"{}\": values must be one of: u s r uu us ur su ss sr ru rs rr", options.split_strand);
     }
 
-    let mut intervals: HashMap<&str, > = HashMap::new();
     // read in the annotation file
-    // map<string,IntervalTree<int8_t>> intervals{};
-    // if (!autostrand.empty()) {
-    //     readAnnotationFile(autostrand, intervals);
-    // }
+    let mut intervals: HashMap<(String, char), IntervalSet<i32>> = HashMap::new();
+    if ! options.autostrand.is_empty() {
+        read_annotation_file(&options.autostrand, &mut intervals);
+    }
 
     // // analyze the bam file and produce histograms
-    // if (!autostrand.empty()) {
-    //     // make both stranded and unstranded files
-    //     analyzeBam(split_strand, !autostrand.empty(), intervals);
-    //     analyzeBam(string("uu"), false, intervals);
-    // }
-    // else {
-    //     analyzeBam(split_strand, !autostrand.empty(), intervals);
-    // }
+    if ! options.autostrand.is_empty() {
+        // make both stranded and unstranded files
+        analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
+        analyze_bam(&options, "uu", false, &intervals);
+    }
+    else {
+         analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
+    }
 }
 
