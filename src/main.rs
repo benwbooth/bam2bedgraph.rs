@@ -46,7 +46,7 @@ fn open_file(
     read_number: i32,
     strand: &str,
     split_strand: &str,
-    fhs: &mut HashMap<String,File>)
+    fhs: &mut HashMap<String,Option<File>>)
     -> String
 {
     let mut prefix = PathBuf::new();
@@ -71,7 +71,7 @@ fn open_file(
         if options.trackline {
             writeln!(f, "track type=bedGraph name=\"{}\" description=\"{}\" visibility=full", track_name, track_name).unwrap();
         }
-        fhs.insert(filename.clone(), f);
+        fhs.insert(filename.clone(), Some(f));
     }
     filename
 }
@@ -80,7 +80,7 @@ fn write_chr(
     options: &Options,
     chr: &(u32, String),
     histogram: &HashMap<(i32,String),Vec<i32>>,
-    fhs: &mut HashMap<String,File>,
+    fhs: &mut HashMap<String,Option<File>>,
     split_strand: &str)
 {
    for (key, histo) in histogram {
@@ -88,7 +88,7 @@ fn write_chr(
        let strand = &key.1;
        let filename = open_file(options, read_number, strand, split_strand, fhs);
 
-       let ref mut fh = fhs.get_mut(&filename).unwrap();
+       let ref mut fh = fhs.get_mut(&filename).unwrap().as_mut().unwrap();
 
        // scan the histogram to produce the bedgraph data
        let mut start: usize = 0;
@@ -151,7 +151,7 @@ fn analyze_bam(
     }
 
     let mut lastchr: i32 = -1;
-    let mut fhs: HashMap<String, File> = HashMap::new();
+    let mut fhs: HashMap<String, Option<File>> = HashMap::new();
     let mut histogram: HashMap<(i32, String), Vec<i32>> = HashMap::new();
 
     let mut autostrand_totals: HashMap<char, i64> = HashMap::new();
@@ -269,6 +269,11 @@ fn analyze_bam(
                 open_file(options, read_number, s, split_strand, &mut fhs);
             }
         }
+    }
+
+    // close the filehandles
+    for (_, fh) in &mut fhs {
+        *fh = None;
     }
 
     if autostrand_pass {
