@@ -1,11 +1,10 @@
+#![feature(vec_resize)]
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
 use std::io::stderr;
 use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::cmp::max;
+use std::cmp::{min, max};
 use std::str;
 use std::path::PathBuf;
 
@@ -15,30 +14,31 @@ use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
 extern crate regex;
 use regex::Regex;
 
-extern crate interval;
-use interval::interval_set::IntervalSet;
-use interval::ops::Range;
-use std::ops::Add;
-
 extern crate rust_htslib;
-use rust_htslib::bam::Reader;
 use rust_htslib::bam::Read;
+use rust_htslib::bam::IndexedReader;
+use rust_htslib::bam::record::Cigar;
 
-// void cigar2exons(vector<pair<size_t,size_t>> &exons, const vector<CigarOp> &cigar, size_t pos) {
-//   for (auto &op : cigar) {
-//     if (op.Type == 'M') {
-//       pos += op.Length;
-//       exons.push_back({pos - op.Length, pos});
-//     }
-//     else if (op.Type == 'N' || op.Type == 'D') {
-//       pos += op.Length;
-//     }
-//     else if (op.Type == 'I' || op.Type == 'S' || op.Type == 'H' || op.Type == 'P') {}
-//     else {
-//       throw string("Bad CIGAR string: ")+op.Type;
-//     }
-//   }
-// }
+fn cigar2exons(
+    exons: &mut Vec<(i32, i32)>,
+    cigar: &Vec<Cigar>,
+    pos: i32)
+{
+    let mut pos = pos;
+    for op in cigar {
+        match op {
+            &Cigar::Match(length) => {
+                pos += length as i32;
+                exons.push((pos - length as i32, pos));
+            },
+            &Cigar::RefSkip(length) | &Cigar::Del(length) => {
+                pos += length as i32;
+            },
+            &Cigar::Ins(_) | &Cigar::SoftClip(_) | &Cigar::HardClip(_) | &Cigar::Pad(_) => {},
+            c => panic!("Bad CIGAR string: {:?}", c)
+        };
+    }
+}
 
 fn open_file(
     options: &Options,
@@ -54,13 +54,13 @@ fn open_file(
     let track_name = vec!(
         if !options.trackname.is_empty() {options.trackname.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
         if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
-        if options.split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
+        if split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
         ).connect("");
 
     let filename = vec!(
         if !options.out.is_empty() {options.out.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
         if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
-        if options.split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
+        if split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
         ".bedgraph".to_string(),
         ).connect("");
 
@@ -68,7 +68,7 @@ fn open_file(
     if !fhs.contains_key(&filename) {
         let mut f = File::create(&filename).unwrap();
         if options.trackline {
-            writeln!(f, "track type=bedGraph name=\"{}\" description=\"{}\" visibility-full", track_name, track_name).unwrap();
+            writeln!(f, "track type=bedGraph name=\"{}\" description=\"{}\" visibility=full", track_name, track_name).unwrap();
         }
         fhs.insert(filename.clone(), f);
     }
@@ -86,100 +86,46 @@ fn write_chr(
        let read_number = key.0;
        let strand = &key.1;
        let filename = open_file(options, read_number, strand, split_strand, fhs);
-// 
-//     string filename = open_file(read_number, strand, split_strand, fhs);
-//     auto &fh = *fhs[filename];
-//     // scan the histogram to produce the bedgraph data
-//     size_t start = 0;
-//     size_t end = 0;
-//     size_t ref_length = numeric_cast<size_t>(chr.RefLength);
-//     while (start < ref_length) {
-//       while ((end < histo.size()? histo[end] : 0) == (start < histo.size()? histo[start] : 0) && end < ref_length) ++end;
-//       if (zero || (start < histo.size()? histo[start] : 0)) {
-//         fh << chr.RefName << "\t" <<
-//               start << "\t" <<
-//               end << "\t" <<
-//               (strand == "-"? -histo[start] : histo[start]) << endl;
-//       }
-//       start = end;
-//     }
-   }
-}
 
-// if autostrand is set, read the input annotation file into an interval tree
-fn read_annotation_file(autostrand: &str, intervals: &mut HashMap<(String, char), IntervalSet<i32>>) {
-    if ! autostrand.is_empty() {
-        let mut chr_col=0;
-        let mut start_col=0;
-        let mut stop_col=0;
-        let mut strand_col=0;
-        let mut base=0;
-        for cap in Regex::new(r"\.([^.]+)$").unwrap().captures_iter(autostrand) {
-            if Regex::new(r"(?i)^bed$").unwrap().is_match(cap.at(1).unwrap_or("")) {
-                writeln!(&mut stderr(), "Reading bed annotation file {}", autostrand).unwrap();
-                chr_col = 0;
-                start_col = 1;
-                stop_col = 2;
-                strand_col = 5;
-                base = 0;
-            }
-            else if Regex::new(r"(?i)^(gff|gtf|gff3)$").unwrap().is_match(cap.at(1).unwrap_or("")) {
-                writeln!(&mut stderr(), "Reading gff annotation file {}", autostrand).unwrap();
-                chr_col = 0;
-                start_col = 3;
-                stop_col = 4;
-                strand_col = 6;
-                base = 1;
-            }
-            else {
-                panic!("Could not recognize file extension of annotation file {}: {}",
-                       autostrand, cap.at(1).unwrap_or(""));
-            }
-        }
-        let annot_fh = BufReader::new(File::open(autostrand).unwrap());
-        let comment_line = Regex::new(r"^[ ]*#").unwrap();
-        for line in annot_fh.lines() {
-            let line = line.unwrap();
-            if comment_line.is_match(&line) { continue }
-            let cols: Vec<&str> = Regex::new(r"\t").unwrap().split(&line).collect();
-            let max_col = [chr_col, start_col, stop_col, strand_col].iter().fold(0, |a, &b| max(a, b));
-            if max_col < cols.len() {
-                let chr = cols[chr_col].to_string();
-                let start = cols[start_col].trim().parse::<i32>().unwrap();
-                let stop = cols[stop_col].trim().parse::<i32>().unwrap();
-                let strand_str = cols[strand_col];
-                let strand =
-                    if strand_str == "-1" || strand_str == "-" {'-'} else
-                    if strand_str == "1" || strand_str == "+" {'+'} else {'\0'};
-                if strand != '\0' {
-                    let key = (chr, strand);
-                    let interval = IntervalSet::new(start-(base-1), stop);
-                    if !intervals.contains_key(&key) {
-                        intervals.insert(key, interval);
-                    }
-                    else {
-                        let ref intervals = intervals[&key];
-                        intervals.add(interval);
-                    }
-                }
-            }
-        }
-    }
+       let ref mut fh = fhs.get_mut(&filename).unwrap();
+
+       // scan the histogram to produce the bedgraph data
+       let mut start: usize = 0;
+       let mut end: usize = 0;
+       let ref_length: usize = chr.0 as usize;
+       while start < ref_length {
+           while (if end < histo.len() {histo[end]} else {0})
+              == (if start < histo.len() {histo[start]} else {0})
+               && end < ref_length
+           { end += 1 }
+           if options.zero || (if start < histo.len() {histo[start]} else {0}) > 0 {
+               writeln!(fh, "{}\t{}\t{}\t{}",
+                        chr.1,
+                        start,
+                        end,
+                        if strand == "-" {-histo[start]} else {histo[start]}).unwrap();
+           }
+           start = end;
+       }
+   }
 }
 
 fn analyze_bam(
     options: &Options,
     split_strand: &str,
     autostrand_pass: bool,
-    intervals: &HashMap<(String, char), IntervalSet<i32>>)
+    intervals: &mut Option<IndexedReader>)
 {
     let bam = rust_htslib::bam::Reader::new(&options.bamfile);
     let ref header = bam.header;
-    let mut refs: Vec<(u32, String)> = Vec::new();
-    for target_name in header.target_names() {
-        refs.push((header.tid(&target_name).unwrap(), str::from_utf8(target_name).unwrap().to_string()));
+
+    let mut refs: Vec<(u32, String)> = Vec::with_capacity(header.target_count() as usize);
+    let target_names = header.target_names();
+    for tid in 0..header.target_count() {
+        refs[tid as usize] = (
+            header.target_len(tid).unwrap(),
+            str::from_utf8(target_names[tid as usize]).unwrap().to_string());
     }
-    refs.sort_by(|a, b| a.0.cmp(&b.0));
 
     if options.fixchr {
         for r in &mut refs {
@@ -207,8 +153,8 @@ fn analyze_bam(
     let mut fhs: HashMap<String, File> = HashMap::new();
     let mut histogram: HashMap<(i32, String), Vec<i32>> = HashMap::new();
 
-    let mut autostrandTotals: HashMap<char, i64> = HashMap::new();
-    let mut autostrandTotals2: HashMap<char, i64> = HashMap::new();
+    let mut autostrand_totals: HashMap<char, i64> = HashMap::new();
+    let mut autostrand_totals2: HashMap<char, i64> = HashMap::new();
 
     let mut read = rust_htslib::bam::record::Record::new();
     while bam.read(&mut read).is_ok() {
@@ -221,74 +167,96 @@ fn analyze_bam(
             lastchr = read.tid();
         }
 
+        // skip this read if it's no good
+        let paired = read.is_paired();
+        let proper = read.is_proper_pair();
+        let primary = !read.is_secondary();
+        if (options.paired_only && !paired) || (options.primary_only && !primary) || (options.proper_only && !proper)
+            {continue}
+        
+        // skip if it's not unique and we want unique alignments
+        if options.uniq {
+            let hits = read.aux("NH".as_bytes());
+            if hits.is_none() || hits.unwrap().integer() != 1 {continue}
+        }
+
+        let mut exons: Vec<(i32,i32)> = Vec::new();
+        cigar2exons(&mut exons, &read.cigar(), read.pos());
+        if !options.split_exons && exons.len() > 0 {
+            exons = vec!((exons.get(0).unwrap().0, exons.get(exons.len()-1).unwrap().1));
+        }
+        let read_number = if read.is_second_in_pair() {2} else {1};
+
+        // attempt to determine the strandedness of the transcript
+        // read numbers match, is not reverse, is not flipped
+        let xs = read.aux("XS".as_bytes());
+        let strand = if xs.is_some() {
+            let strand = str::from_utf8(xs.unwrap().string()).unwrap(); strand
+        }
+        else if read_number == 1 {
+            if split_strand.as_bytes()[0] == 'r' as u8 { if read.is_reverse() { "+" } else { "-" } }
+            else if split_strand.as_bytes()[0] == 's' as u8 {if read.is_reverse() { "-" } else { "+" } }
+            else { "" }
+        }
+        else if read_number == 2 {
+            if split_strand.as_bytes()[1] == 's' as u8 { if read.is_reverse() { "-" } else { "+" } }
+            else if split_strand.as_bytes()[1] == 'r' as u8 { if read.is_reverse() { "+" } else { "-" } }
+            else { "" }
+        }
+        else { "" };
+
+        let read_num = if options.split_read { read_number } else { 0 };
+
+        let ref_length = refs[read.tid() as usize].0;
+
+        // add the read to the histogram
+        for exon in exons {
+            // try to determine the strandedness of the data
+            if autostrand_pass {
+                if intervals.is_some() {
+                    let mut intervals = intervals.as_mut().unwrap();
+                    let interval_tid = intervals.header.tid(refs[read.tid() as usize].1.as_bytes());
+                    if interval_tid.is_some() {
+                        intervals.seek(interval_tid.unwrap(), (exon.0+1) as u32, exon.1 as u32).unwrap();
+                        let mut interval = rust_htslib::bam::record::Record::new();
+                        while bam.read(&mut interval).is_ok() {
+                            let mut interval_exons: Vec<(i32,i32)> = Vec::new();
+                            cigar2exons(&mut interval_exons, &read.cigar(), read.pos());
+                            for interval_exon in interval_exons {
+                                let overlap_length =
+                                    min(exon.1, interval_exon.1) -
+                                    max(exon.0, interval_exon.0-1);
+
+                                let strandtype = if read.is_reverse() == (strand == "-") { 's' } else { 'r' };
+                                if read_number == 1 {
+                                    *autostrand_totals.get_mut(&strandtype).unwrap() += overlap_length as i64;
+                                }
+                                else if read_number == 2 {
+                                    *autostrand_totals2.get_mut(&strandtype).unwrap() += overlap_length as i64;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                let tuple = (read_num, strand.to_string());
+                if !histogram.contains_key(&tuple) { histogram.insert(tuple.clone(), Vec::new()); }
+                // keep track of chromosome sizes
+                if ref_length < exon.1 as u32 {
+                    refs[read.tid() as usize].0 = exon.1 as u32;
+                }
+                if histogram[&tuple].len() < ref_length as usize {
+                    histogram.get_mut(&tuple).unwrap().resize(ref_length as usize, 0);
+                }
+
+                for pos in exon.0 .. exon.1 {
+                    (*histogram.get_mut(&tuple).unwrap())[pos as usize] += 1;
+                }
+            }
+        }
     }
-//   while (bam.GetNextAlignment(read)) {
-// 
-//     // skip this read if it's no good
-//     bool paired = read.IsPaired();
-//     bool proper = read.IsProperPair();
-//     bool primary  = read.IsPrimaryAlignment();
-//     if ((paired_only && !paired) || (primary_only && !primary) || (proper_only && !proper)) continue;
-// 
-//     // skip if it's not unique and we want unique alignments
-//     if (uniq) {
-//       int32_t hits=0;
-//       if (!read.GetTag("NH",hits) || hits != 1) continue;
-//     }
-// 
-//     vector<pair<size_t,size_t>> exons;
-//     if (split_exons) cigar2exons(exons, read.CigarData, read.Position);
-//     else exons.push_back({read.Position, read.GetEndPosition()});
-//     int32_t read_number = read.IsSecondMate()? 2 : 1;
-// 
-//     // attempt to determine the strandedness of the transcript
-//     uint8_t xs = 0;
-//     // read numbers match, is not reverse, is not flipped
-//     string strand =
-//         read.GetTag("XS",xs) && xs? string{static_cast<char>(xs)} :
-//           read_number == 1? split_strand[0] == 'r'? read.IsReverseStrand()? "+" : "-" :
-//                             split_strand[0] == 's'? read.IsReverseStrand()? "-" : "+" :
-//                             "" :
-//           read_number == 2? split_strand[1] == 's'? read.IsReverseStrand()? "-" : "+" :
-//                             split_strand[1] == 'r'? read.IsReverseStrand()? "+" : "-" :
-//                             "" :
-//         "";
-// 
-//     int32_t read_num = split_read? read_number : 0;
-// 
-//     size_t ref_length = numeric_cast<size_t>(refs[read.RefID].RefLength);
-//     // add the read to the histogram
-//     for (auto &exon : exons) {
-//       // try to determine the strandedness of the data
-//       if (autostrandPass) {
-//         if (intervals.count(refs[lastchr].RefName)) {
-//           vector<Interval<int8_t>> overlappingAnnot;
-//           intervals[refs[lastchr].RefName].findOverlapping(exon.first+1, exon.second, overlappingAnnot);
-//           for (const auto& interval : overlappingAnnot) {
-//             size_t overlap_length = std::min(exon.second, numeric_cast<size_t>(interval.stop)) -
-//                                     std::max(exon.first, numeric_cast<size_t>(interval.start-1));
-// 
-//             char strandtype = read.IsReverseStrand() == (interval.value == '-')? 's' : 'r';
-//             if (read_number == 1) autostrandTotals[strandtype] += overlap_length;
-//             else if (read_number == 2) autostrandTotals2[strandtype] += overlap_length;
-//           }
-//         }
-//       }
-//       else {
-//         auto tuple = std::make_tuple(read_num, strand);
-//         if (!histogram.count(tuple)) histogram.insert({tuple, vector<int32_t>{}});
-//         // keep track of chromosome sizes
-//         if (ref_length < exon.second) refs[read.RefID].RefLength = numeric_cast<int32_t>(exon.second);
-//         if (histogram[tuple].size() < ref_length) histogram[tuple].resize(ref_length);
-// 
-//         for (size_t pos=exon.first; pos < exon.second; ++pos) {
-//           histogram[tuple][pos]++;
-//         }
-//       }
-//     }
-//   }
-//   bam.Close();
-// 
+
 //   if (!autostrandPass && !histogram.empty() && lastchr != -1) {
 //     write_chr(refs[lastchr], histogram, fhs, split_strand);
 //   }
@@ -429,8 +397,8 @@ fn main() {
             add_option(&["--split"], StoreTrue, "Use CIGAR string to split alignment into separate exons (default)").
             add_option(&["--nosplit"], StoreFalse, "");
         ap.refer(&mut options.autostrand).
-            add_option(&["--autostrand"], Store, "Attempt to determine the strandedness of the input data using an annotation file. Can take GFF2/3, GTF, BED formatted files").
-            metavar("ANNOT_FILE");
+            add_option(&["--autostrand"], Store, "Attempt to determine the strandedness of the input data using an annotation file. Must be an indexed .bam file.").
+            metavar("ANNOT_BAMFILE");
         ap.refer(&mut options.split_strand).
             add_option(&["--strand"], Store, "Split output bedgraph by strand: Possible values: u s r uu us ur su ss sr ru rs rr, first char is read1, second is read2, u=unstranded, s=stranded, r=reverse").
             metavar("[TYPE]");
@@ -476,19 +444,22 @@ fn main() {
     }
 
     // read in the annotation file
-    let mut intervals: HashMap<(String, char), IntervalSet<i32>> = HashMap::new();
+    let mut intervals: Option<IndexedReader> = None;
     if ! options.autostrand.is_empty() {
-        read_annotation_file(&options.autostrand, &mut intervals);
+        intervals = Some(match IndexedReader::new(&options.autostrand) {
+            Err(_) => panic!("Could not open annotation bam file: {}", options.autostrand),
+            Ok(a) => a
+        });
     }
 
     // // analyze the bam file and produce histograms
     if ! options.autostrand.is_empty() {
         // make both stranded and unstranded files
-        analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
-        analyze_bam(&options, "uu", false, &intervals);
+        analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &mut intervals);
+        analyze_bam(&options, "uu", false, &mut intervals);
     }
     else {
-         analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
+         analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &mut intervals);
     }
 }
 

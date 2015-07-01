@@ -3,7 +3,6 @@ name = "bam2bedgraph"
 version = "0.1.0"
 dependencies = [
  "argparse 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "intervallum 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.38 (registry+https://github.com/rust-lang/crates.io-index)",
  "rust-htslib 0.3.1 (git+https://github.com/christopher-schroeder/rust-htslib.git)",
 ]
@@ -22,14 +21,6 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
-name = "intervallum"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "num 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "libc"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -37,23 +28,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "memchr"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "libc 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "num"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "rand 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustc-serialize 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "rand"
-version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "libc 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -78,9 +52,4 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "rust-htslib"
 version = "0.3.1"
 source = "git+https://github.com/christopher-schroeder/rust-htslib.git#68b2e9d2b288ad5b8c66747b4b0c367ab738f4e6"
-
-[[package]]
-name = "rustc-serialize"
-version = "0.3.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 
