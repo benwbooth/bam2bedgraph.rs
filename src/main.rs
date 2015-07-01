@@ -323,35 +323,45 @@ fn analyze_bam(
 
     if !autostrand_pass && options.bigwig {
         // Convert bedgraph file to bigwig file
-    //     for fh in &fhs {
-    //         // write the genome file for bigwigs
-    //         let genome_filename = fh.0+".genome";
-    //         {
-    //             let genome_fh = try!(File::create(genome_filename));
-    //             for r in refs {
-    //                 writeln!(genome_fh, "{}\t{}", r.1, r.0).unwrap();
-    //             }
-    //         }
+        for fh in &fhs {
+            // write the genome file for bigwigs
+            let genome_filename = format!("{}.genome", fh.0);
+            {
+                let mut genome_fh = File::create(&genome_filename).unwrap();
+                for r in &refs {
+                    writeln!(genome_fh, "{}\t{}", r.1, r.0).unwrap();
+                }
+            }
 
-    //         // run bedGraphToBigWig
-    //         let command = vec![
-    //             "bedGraphToBigWig",
-    //             fh.0,
-    //             genome_filename,
-    //             Regex::new(r"\.bedgraph$").unwrap().replace(fh.0, ".bw")];
-    //         let mut child = Command::new(&command[0]).args(&command[1..])
-    //             .spawn().unwrap_or_else(|e| { panic!("Failed to execute command: {}", e)});
-    //         let exit_code = child.wait().unwrap_or_else(|e| {panic!("Failed to wait on command: {}", e)});
-    //         if !exit_code.success() {
-    //             panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code.unwrap_or("None") command);
-    //         }
+            // run bedGraphToBigWig
+            let bigwig_file = Regex::new(r"\.bedgraph$").unwrap().replace(fh.0, ".bw");
+            let command = vec![
+                "bedGraphToBigWig",
+                fh.0,
+                &genome_filename,
+                &bigwig_file];
+            let mut child = Command::new(&command[0]).args(&command[1..])
+                .spawn().unwrap_or_else(|e| { panic!("Failed to execute command: {}", e)});
+            let exit_code = child.wait().unwrap_or_else(|e| {panic!("Failed to wait on command: {}", e)});
+            if !exit_code.success() {
+                if exit_code.code().is_some() {
+                    panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code().unwrap(), command);
+                }
+                else {
+                    panic!("Command was interrupted: {:?}", command);
+                }
+            }
 
-    //         // remove the bedgraph file
-    //         std::fs::remove_file(fh.0);
-    //         // remove the genome file
-    //         std::fs::remove_file(genome_filename);
-    //     }
-    // }
+            // remove the bedgraph file
+            std::fs::remove_file(fh.0).unwrap_or_else(|e| {
+                writeln!(stderr(), "Failed to remove file {}: {:?}", fh.0, e).unwrap();
+            });
+            // remove the genome file
+            std::fs::remove_file(&genome_filename).unwrap_or_else(|e| {
+                writeln!(stderr(), "Failed to remove file {}: {:?}", genome_filename, e).unwrap();
+            });
+        }
+    }
 }
 
 struct Options {
