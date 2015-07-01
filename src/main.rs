@@ -449,7 +449,11 @@ fn main() {
             add_option(&["--notrackline"], StoreFalse, "");
         ap.refer(&mut options.trackname).
             add_option(&["--trackname"], Store, "Name of track for the track line").metavar("TRACKNAME");
-        ap.parse_args_or_exit();
+        if ap.parse_args().is_err() {
+            let name = if std::env::args().count() > 0 {std::env::args().nth(0).unwrap()} else {"unknown".to_string()};
+            ap.print_help(&name, &mut stderr()).unwrap();
+            std::process::exit(1);
+        }
     }
     options.split_strand = options.split_strand.to_ascii_lowercase();
     if options.split_strand.len() == 1 {
