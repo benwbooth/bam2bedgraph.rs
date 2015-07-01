@@ -7,6 +7,7 @@ use std::fs::File;
 use std::cmp::{min, max};
 use std::str;
 use std::path::PathBuf;
+use std::process::Command;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -257,99 +258,100 @@ fn analyze_bam(
         }
     }
 
-//   if (!autostrandPass && !histogram.empty() && lastchr != -1) {
-//     write_chr(refs[lastchr], histogram, fhs, split_strand);
-//   }
-// 
-//   // make sure empty files were created
-//   if (histogram.empty() && !autostrandPass) {
-//     for (auto &read_number : split_read? vector<int32_t>{1,2} : vector<int32_t>{0}) {
-//       for (auto &s : split_strand != "uu"? vector<string>{"+","-"} : vector<string>{""}) {
-//         open_file(read_number, s, split_strand, fhs);
-//       }
-//     }
-//   }
-// 
-//   // close the filehandles
-//   for (auto &fh : fhs) {
-//     fh.second->close();
-//   }
-//   if (autostrandPass) {
-//     // get the read 1 and read2 totals
-//     int64_t total1 = 0;
-//     int64_t total2 = 0;
-//     for (auto &i : autostrandTotals) {
-//       total1 += i.second;
-//     }
-//     for (auto &i : autostrandTotals2) {
-//       total2 += i.second;
-//     }
-//     // figure out the best and second-best strand types for reads 1 and 2
-//     pair<int32_t,int64_t> best1;
-//     pair<int32_t,int64_t> second_best1;
-//     pair<int32_t,int64_t> best2;
-//     pair<int32_t,int64_t> second_best2;
-//     for (auto &i : autostrandTotals) {
-//       cerr << "Total evidence for read 1 strand type " << i.first << ": " << i.second << endl;
-//       if (best1.second < i.second) {
-//         second_best1 = best1;
-//         best1 = i;
-//       }
-//       else if (second_best1.second < i.second) {
-//         second_best1 = i; 
-//       }
-//     }
-//     for (auto &i : autostrandTotals2) {
-//       cerr << "Total evidence for read 2 strand type " << i.first << ": " << i.second << endl;
-//       if (best2.second < i.second) {
-//         second_best2 = best2;
-//         best2 = i;
-//       }
-//       else if (second_best2.second < i.second) {
-//         second_best2 = i;
-//       }
-//     }
-//     const double threshold = 0.0; //threshold isn't working, set to zero
-//     char strand1 = (total1 > 0.0)?
-//       threshold < numeric_cast<double>(best1.second - second_best1.second) / numeric_cast<double>(total1)? best1.first : 'u'
-//                   : 'u';
-//     char strand2 = (total2 > 0.0)?
-//       threshold < numeric_cast<double>(best2.second - second_best2.second) / numeric_cast<double>(total2)? best2.first : 'u'
-//                   : 'u';
-//     string best_strand {strand1, strand2};
-//     cerr << "autostrandPass found best strand type: " << best_strand << endl;
-// 
-//     // re-run analyzeBam with the strand type indicated
-//     analyzeBam(best_strand, false, intervals);
-//   }
-//   if (!autostrandPass && bigwig) {
-//     // Convert bedgraph file to bigwig file
-//     for (auto &fh : fhs) {
-//       // write the genome file for bigwigs
-//       string genome_filename = fh.first+".genome";
-//       ofstream genome_fh {};
-//       genome_fh.exceptions(std::ios::badbit | std::ios::failbit);
-//       genome_fh.open(genome_filename);
-//       for (auto& ref : refs) {
-//         genome_fh << ref.RefName << "\t" << ref.RefLength << endl;
-//       }
-//       genome_fh.close();
-// 
-//       string cmd = (format("bedGraphToBigWig '%s' '%s' '%s'") %
-//           boost::regex_replace(fh.first, regex(R"(')"), "'\\''") %
-//           boost::regex_replace(genome_filename, regex(R"(')"), "'\\''") %
-//           boost::regex_replace(boost::regex_replace(fh.first, regex(R"(\.bedgraph$)"),"")+".bw", regex(R"(')"), "'\\''")).str();
-//       int result = system(cmd.c_str());
-//       if (WEXITSTATUS(result) != 0) {
-//         throw format("Command \"%s\" returned bad exit status: %d") % cmd % WEXITSTATUS(result);
-//       }
-// 
-//       // remove the bedgraph file
-//       boost::filesystem::remove(fh.first);
-//       // remove the genome file
-//       boost::filesystem::remove(genome_filename);
-//     }
-//   }
+    if !autostrand_pass && !histogram.is_empty() && lastchr != -1 {
+        write_chr(options, &refs[lastchr as usize], &histogram, &mut fhs, split_strand);
+    }
+
+    // make sure empty files were created
+    if histogram.is_empty() && !autostrand_pass {
+        for read_number in if options.split_read {vec![1,2]} else {vec![0]} {
+            for s in if split_strand != "uu" {vec!["+","-"]} else {vec![""]} {
+                open_file(options, read_number, s, split_strand, &mut fhs);
+            }
+        }
+    }
+
+    if autostrand_pass {
+        // get the read 1 and read2 totals
+        let mut total1: i64 = 0;
+        let mut total2: i64 = 0;
+        for i in &autostrand_totals {
+            total1 += *i.1;
+        }
+        for i in &autostrand_totals2 {
+            total2 += *i.1;
+        }
+        // figure out the best and second-best strand types for reads 1 and 2
+        let mut best1: (char, i64) = ('\0', 0);
+        let mut second_best1: (char, i64) = ('\0', 0);
+        let mut best2: (char, i64) = ('\0', 0);
+        let mut second_best2: (char, i64) = ('\0', 0);
+        for i in autostrand_totals {
+            writeln!(stderr(), "Total evidence for read 1 strand type {}: {}", i.0, i.1).unwrap();
+            if best1.1 < i.1 {
+                second_best1 = best1;
+                best1 = i;
+            }
+            else if second_best1.1 < i.1 {
+                second_best1 = i;
+            }
+        }
+        for i in autostrand_totals2 {
+            writeln!(stderr(), "Total evidence for read 2 strand type {}: {}", i.0, i.1).unwrap();
+            if best2.1 < i.1 {
+                second_best2 = best2;
+                best2 = i;
+            }
+            else if second_best2.1 < i.1 {
+                second_best2 = i;
+            }
+        }
+        let threshold: f64 = 0.0; //threshold isn't working, set to zero
+        let strand1 = if total1 > 0 {
+            if threshold < (best1.1 - second_best1.1) as f64 / (total1) as f64 { best1.0 } else { 'u' }
+        } else { 'u' };
+        let strand2 = if total2 > 0 {
+            if threshold < (best2.1 - second_best2.1) as f64 / (total2) as f64 { best2.0 } else { 'u' }
+        } else { 'u' };
+
+        let best_strand = format!("{}{}", strand1, strand2);
+        writeln!(stderr(), "autostrand_pass found best strand type: {}", best_strand).unwrap();
+
+        // re-run analyzeBam with the strand type indicated
+        analyze_bam(options, &best_strand, false, intervals);
+    }
+
+    if !autostrand_pass && options.bigwig {
+        // Convert bedgraph file to bigwig file
+    //     for fh in &fhs {
+    //         // write the genome file for bigwigs
+    //         let genome_filename = fh.0+".genome";
+    //         {
+    //             let genome_fh = try!(File::create(genome_filename));
+    //             for r in refs {
+    //                 writeln!(genome_fh, "{}\t{}", r.1, r.0).unwrap();
+    //             }
+    //         }
+
+    //         // run bedGraphToBigWig
+    //         let command = vec![
+    //             "bedGraphToBigWig",
+    //             fh.0,
+    //             genome_filename,
+    //             Regex::new(r"\.bedgraph$").unwrap().replace(fh.0, ".bw")];
+    //         let mut child = Command::new(&command[0]).args(&command[1..])
+    //             .spawn().unwrap_or_else(|e| { panic!("Failed to execute command: {}", e)});
+    //         let exit_code = child.wait().unwrap_or_else(|e| {panic!("Failed to wait on command: {}", e)});
+    //         if !exit_code.success() {
+    //             panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code.unwrap_or("None") command);
+    //         }
+
+    //         // remove the bedgraph file
+    //         std::fs::remove_file(fh.0);
+    //         // remove the genome file
+    //         std::fs::remove_file(genome_filename);
+    //     }
+    // }
 }
 
 struct Options {
