@@ -341,8 +341,12 @@ fn analyze_bam(
                 &genome_filename,
                 &bigwig_file];
             let mut child = Command::new(&command[0]).args(&command[1..])
-                .spawn().unwrap_or_else(|e| { panic!("Failed to execute command: {}", e)});
-            let exit_code = child.wait().unwrap_or_else(|e| {panic!("Failed to wait on command: {}", e)});
+                .spawn().unwrap_or_else(|e| {
+                    panic!("Failed to execute command: {:?}, {}", command, e);
+                });
+            let exit_code = child.wait().unwrap_or_else(|e| {
+                panic!("Failed to wait on command: {:?}: {}", command, e);
+            });
             if !exit_code.success() {
                 if exit_code.code().is_some() {
                     panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code().unwrap(), command);
