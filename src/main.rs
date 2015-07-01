@@ -449,7 +449,8 @@ fn main() {
             add_option(&["--notrackline"], StoreFalse, "");
         ap.refer(&mut options.trackname).
             add_option(&["--trackname"], Store, "Name of track for the track line").metavar("TRACKNAME");
-        if ap.parse_args().is_err() {
+
+        if ap.parse(std::env::args().collect(), &mut std::io::sink(), &mut std::io::sink()).is_err() {
             let name = if std::env::args().count() > 0 {std::env::args().nth(0).unwrap()} else {"unknown".to_string()};
             ap.print_help(&name, &mut stderr()).unwrap();
             std::process::exit(1);
