@@ -4,7 +4,7 @@ version = "0.1.0"
 dependencies = [
  "argparse 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.38 (registry+https://github.com/rust-lang/crates.io-index)",
- "rust-htslib 0.3.1 (git+https://github.com/christopher-schroeder/rust-htslib.git)",
+ "rust-htslib 0.3.1 (git+https://github.com/benwbooth/rust-htslib.git)",
 ]
 
 [[package]]
@@ -51,5 +51,5 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "rust-htslib"
 version = "0.3.1"
-source = "git+https://github.com/christopher-schroeder/rust-htslib.git#68b2e9d2b288ad5b8c66747b4b0c367ab738f4e6"
+source = "git+https://github.com/benwbooth/rust-htslib.git#b418984394e40499423779644761ea8758a5ce8d"
 

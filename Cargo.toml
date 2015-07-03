@@ -8,4 +8,4 @@ argparse = "*"
 regex = "*"
 
 [dependencies.rust-htslib]
-git = "https://github.com/christopher-schroeder/rust-htslib.git"
+git = "https://github.com/benwbooth/rust-htslib.git"

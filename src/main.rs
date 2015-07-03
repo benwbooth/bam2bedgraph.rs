@@ -1,4 +1,4 @@
-#![feature(vec_resize)]
+#![feature(vec_resize, path_ext)]
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
@@ -6,8 +6,9 @@ use std::io::stderr;
 use std::fs::File;
 use std::cmp::{min, max};
 use std::str;
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::process::Command;
+use std::fs::PathExt;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -117,15 +118,19 @@ fn analyze_bam(
     autostrand_pass: bool,
     intervals: &mut Option<IndexedReader>)
 {
+    if !Path::new(&options.bamfile).exists() {
+        panic!("Bam file {} could not be found!", &options.bamfile);
+    }
     let bam = rust_htslib::bam::Reader::new(&options.bamfile);
     let ref header = bam.header;
 
-    let mut refs: Vec<(u32, String)> = Vec::with_capacity(header.target_count() as usize);
+    let mut refs: Vec<(u32, String)> = Vec::new();
+    refs.resize(header.target_count() as usize, (0, "".to_string()));
     let target_names = header.target_names();
-    for tid in 0..header.target_count() {
-        refs[tid as usize] = (
-            header.target_len(tid).unwrap(),
-            str::from_utf8(target_names[tid as usize]).unwrap().to_string());
+    for target_name in target_names {
+        let tid = header.tid(&target_name).unwrap();
+        refs[tid as usize] = (header.target_len(tid).unwrap(),
+                              std::str::from_utf8(target_name).unwrap().to_string());
     }
 
     if options.fixchr {
@@ -155,7 +160,11 @@ fn analyze_bam(
     let mut histogram: HashMap<(i32, String), Vec<i32>> = HashMap::new();
 
     let mut autostrand_totals: HashMap<char, i64> = HashMap::new();
+    autostrand_totals.insert('s',0);
+    autostrand_totals.insert('r',0);
     let mut autostrand_totals2: HashMap<char, i64> = HashMap::new();
+    autostrand_totals2.insert('s',0);
+    autostrand_totals2.insert('r',0);
 
     let mut read = rust_htslib::bam::record::Record::new();
     while bam.read(&mut read).is_ok() {
@@ -392,6 +401,9 @@ struct Options {
 }
 
 fn main() {
+    // enable stack traces
+    std::env::set_var("RUST_BACKTRACE", "1");
+
     let mut options: Options = Options {
         split_exons: false,
         split_read: false,
