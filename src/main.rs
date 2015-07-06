@@ -237,7 +237,7 @@ fn analyze_bam(
                                     min(exon.1, interval_exon.1) -
                                     max(exon.0, interval_exon.0-1);
 
-                                let strandtype = if read.is_reverse() == (strand == "-") { 's' } else { 'r' };
+                                let strandtype = if interval.is_reverse() == (strand == "-") { 's' } else { 'r' };
                                 if read_number == 1 {
                                     *autostrand_totals.get_mut(&strandtype).unwrap() += overlap_length as i64;
                                 }

@@ -6,6 +6,4 @@ authors = ["Ben Booth <benwbooth@gmail.com>"]
 [dependencies]
 argparse = "*"
 regex = "*"
-
-[dependencies.rust-htslib]
-git = "https://github.com/benwbooth/rust-htslib.git"
+rust-htslib = "0.4.1"
