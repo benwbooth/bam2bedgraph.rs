@@ -57,14 +57,14 @@ fn open_file(
         if !options.trackname.is_empty() {options.trackname.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
         if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
         if split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
-        ).connect("");
+        ).join("");
 
     let filename = vec!(
         if !options.out.is_empty() {options.out.clone()} else {prefix.as_path().to_str().unwrap().to_string()},
         if options.split_read && read_number>0 {format!(".r{}", read_number)} else {"".to_string()},
         if split_strand != "uu" && !strand.is_empty() {format!(".{}", strand)} else {"".to_string()},
         ".bedgraph".to_string(),
-        ).connect("");
+        ).join("");
 
     // initialize the file if needed
     if !fhs.contains_key(&filename) {
