@@ -231,7 +231,7 @@ fn analyze_bam(
                         let mut interval = rust_htslib::bam::record::Record::new();
                         while intervals.read(&mut interval).is_ok() {
                             let mut interval_exons: Vec<(i32,i32)> = Vec::new();
-                            cigar2exons(&mut interval_exons, &read.cigar(), read.pos());
+                            cigar2exons(&mut interval_exons, &interval.cigar(), interval.pos());
                             for interval_exon in interval_exons {
                                 let overlap_length =
                                     min(exon.1, interval_exon.1) -
@@ -500,4 +500,3 @@ fn main() {
          analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &mut intervals);
     }
 }
-
