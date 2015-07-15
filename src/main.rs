@@ -227,7 +227,7 @@ fn analyze_bam(
                     let mut intervals = intervals.as_mut().unwrap();
                     let interval_tid = intervals.header.tid(refs[read.tid() as usize].1.as_bytes());
                     if interval_tid.is_some() {
-                        intervals.seek(interval_tid.unwrap(), (exon.0+1) as u32, exon.1 as u32).unwrap();
+                        intervals.seek(interval_tid.unwrap(), exon.0 as u32, exon.1 as u32).unwrap();
                         let mut interval = rust_htslib::bam::record::Record::new();
                         while intervals.read(&mut interval).is_ok() {
                             let mut interval_exons: Vec<(i32,i32)> = Vec::new();
@@ -235,15 +235,20 @@ fn analyze_bam(
                             for interval_exon in interval_exons {
                                 let overlap_length =
                                     min(exon.1, interval_exon.1) -
-                                    max(exon.0, interval_exon.0-1);
+                                    max(exon.0, interval_exon.0);
+                                // writeln!(stderr(), "exon.0={}, exon.1={}, interval_exon.0={}, interval_exon.1={}, overlap_length={}",
+                                //          exon.0, exon.1, interval_exon.0, interval_exon.1, overlap_length).unwrap();
 
-                                let strandtype = if interval.is_reverse() == (strand == "-") { 's' } else { 'r' };
+                                let strandtype = if interval.is_reverse() == read.is_reverse() { 's' } else { 'r' };
                                 if read_number == 1 {
                                     *autostrand_totals.get_mut(&strandtype).unwrap() += overlap_length as i64;
                                 }
                                 else if read_number == 2 {
                                     *autostrand_totals2.get_mut(&strandtype).unwrap() += overlap_length as i64;
                                 }
+                                // writeln!(stderr(), "strandtype={}, read_number={}, autostrand_totals{}[{}]={}",
+                                //          strandtype, read_number, if read_number==1 {""} else {"2"}, strandtype,
+                                //          if read_number==1 {&autostrand_totals[&strandtype]} else {&autostrand_totals2[&strandtype]}).unwrap();
                             }
                         }
                     }
@@ -301,7 +306,9 @@ fn analyze_bam(
         let mut best2: (char, i64) = ('\0', 0);
         let mut second_best2: (char, i64) = ('\0', 0);
         for i in autostrand_totals {
-            writeln!(stderr(), "Total evidence for read 1 strand type {}: {}", i.0, i.1).unwrap();
+            if i.1 > 0 {
+                writeln!(stderr(), "Total evidence for read 1 strand type {}: {}", i.0, i.1).unwrap();
+            }
             if best1.1 < i.1 {
                 second_best1 = best1;
                 best1 = i;
@@ -311,7 +318,9 @@ fn analyze_bam(
             }
         }
         for i in autostrand_totals2 {
-            writeln!(stderr(), "Total evidence for read 2 strand type {}: {}", i.0, i.1).unwrap();
+            if i.1 > 0 {
+                writeln!(stderr(), "Total evidence for read 2 strand type {}: {}", i.0, i.1).unwrap();
+            }
             if best2.1 < i.1 {
                 second_best2 = best2;
                 best2 = i;
