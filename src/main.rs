@@ -229,7 +229,7 @@ fn analyze_bam(
                     if interval_tid.is_some() {
                         intervals.seek(interval_tid.unwrap(), (exon.0+1) as u32, exon.1 as u32).unwrap();
                         let mut interval = rust_htslib::bam::record::Record::new();
-                        while bam.read(&mut interval).is_ok() {
+                        while intervals.read(&mut interval).is_ok() {
                             let mut interval_exons: Vec<(i32,i32)> = Vec::new();
                             cigar2exons(&mut interval_exons, &read.cigar(), read.pos());
                             for interval_exon in interval_exons {
