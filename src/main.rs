@@ -515,11 +515,11 @@ fn main() {
             cigar2exons(&mut exons, &read.cigar(), read.pos());
 
             if exons.len() > 0 {
-                interval_lists.get_mut(&chr).unwrap().push(intervaltree::Interval::<u8> {
-                    start: read.pos()+1,
-                    stop: exons[exons.len()-1].1,
-                    value: if read.is_reverse() {'-' as u8} else {'+' as u8}
-                });
+                interval_lists.get_mut(&chr).unwrap().push(intervaltree::Interval::new(
+                    read.pos()+1,
+                    exons[exons.len()-1].1,
+                    if read.is_reverse() {'-' as u8} else {'+' as u8}
+                ));
             }
         }
         for (chr, list) in &interval_lists {

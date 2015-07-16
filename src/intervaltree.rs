@@ -143,6 +143,7 @@ impl<T: Sized+Copy> IntervalTree<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn find_contained(&self, start: i32, stop: i32, contained: &mut Vec<Interval<T>>) {
         if !self.intervals.is_empty() && !(stop < self.intervals[0].start) {
             for i in 0..self.intervals.len() {
@@ -188,4 +189,3 @@ impl<T: Sized+Copy> Clone for IntervalTree<T> {
         }
     }
 }
-
