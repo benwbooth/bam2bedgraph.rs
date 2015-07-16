@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::io::stderr;
 use std::fs::File;
-use std::cmp::{min, max};
 use std::str;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::fs::PathExt;
+use std::vec::Vec;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -18,8 +18,9 @@ use regex::Regex;
 
 extern crate rust_htslib;
 use rust_htslib::bam::Read;
-use rust_htslib::bam::IndexedReader;
 use rust_htslib::bam::record::Cigar;
+
+mod intervaltree;
 
 fn cigar2exons(
     exons: &mut Vec<(i32, i32)>,
@@ -116,7 +117,7 @@ fn analyze_bam(
     options: &Options,
     split_strand: &str,
     autostrand_pass: bool,
-    intervals: &mut Option<IndexedReader>)
+    intervals: &Option<HashMap<String,intervaltree::IntervalTree<u8>>>)
 {
     if !Path::new(&options.bamfile).exists() {
         panic!("Bam file {} could not be found!", &options.bamfile);
@@ -224,33 +225,18 @@ fn analyze_bam(
             // try to determine the strandedness of the data
             if autostrand_pass {
                 if intervals.is_some() {
-                    let mut intervals = intervals.as_mut().unwrap();
-                    let interval_tid = intervals.header.tid(refs[read.tid() as usize].1.as_bytes());
-                    if interval_tid.is_some() {
-                        intervals.seek(interval_tid.unwrap(), exon.0 as u32, exon.1 as u32).unwrap();
-                        let mut interval = rust_htslib::bam::record::Record::new();
-                        while intervals.read(&mut interval).is_ok() {
-                            let mut interval_exons: Vec<(i32,i32)> = Vec::new();
-                            cigar2exons(&mut interval_exons, &interval.cigar(), interval.pos());
-                            for interval_exon in interval_exons {
-                                let overlap_length =
-                                    min(exon.1, interval_exon.1) -
-                                    max(exon.0, interval_exon.0);
-                                // writeln!(stderr(), "exon.0={}, exon.1={}, interval_exon.0={}, interval_exon.1={}, overlap_length={}",
-                                //          exon.0, exon.1, interval_exon.0, interval_exon.1, overlap_length).unwrap();
+                    let ref intervals = intervals.as_ref().unwrap();
+                    if intervals.contains_key(&refs[lastchr as usize].1) {
+                        let mut overlapping_annot: Vec<intervaltree::Interval<u8>> = Vec::new();
+                        intervals[&refs[lastchr as usize].1].find_overlapping(exon.0+1, exon.1, &mut overlapping_annot);
 
-                                let strandtype = if interval.is_reverse() == read.is_reverse() { 's' } else { 'r' };
-                                if read_number == 1 {
-                                    *autostrand_totals.get_mut(&strandtype).unwrap() += overlap_length as i64;
-                                }
-                                else if read_number == 2 {
-                                    *autostrand_totals2.get_mut(&strandtype).unwrap() += overlap_length as i64;
-                                }
-                                // writeln!(stderr(), "strandtype={}, read_number={}, autostrand_totals{}[{}]={}",
-                                //          strandtype, read_number, if read_number==1 {""} else {"2"}, strandtype,
-                                //          if read_number==1 {&autostrand_totals[&strandtype]} else {&autostrand_totals2[&strandtype]}).unwrap();
-                            }
-                        }
+                      for interval in overlapping_annot {
+                          let overlap_length = std::cmp::min(exon.1, interval.stop) - std::cmp::max(exon.0, interval.start-1);
+
+                          let strandtype = if read.is_reverse() == (interval.value == '-' as u8) {'s'} else {'r'};
+                          if read_number == 1 {*autostrand_totals.get_mut(&strandtype).unwrap() += overlap_length as i64}
+                          else if read_number == 2 {*autostrand_totals2.get_mut(&strandtype).unwrap() += overlap_length as i64}
+                      }
                     }
                 }
             }
@@ -491,21 +477,66 @@ fn main() {
     }
 
     // read in the annotation file
-    let mut intervals: Option<IndexedReader> = None;
+    let mut intervals: Option<HashMap<String,intervaltree::IntervalTree<u8>>> = None;
     if ! options.autostrand.is_empty() {
-        intervals = Some(match IndexedReader::new(&options.autostrand) {
-            Err(_) => panic!("Could not open annotation bam file: {}", options.autostrand),
-            Ok(a) => a
-        });
+        if !Path::new(&options.autostrand).exists() {
+            panic!("Autostrand Bam file {} could not be found!", &options.autostrand);
+        }
+        let bam = rust_htslib::bam::Reader::new(&options.autostrand);
+        let ref header = bam.header;
+
+        let mut refs: Vec<(u32, String)> = Vec::new();
+        refs.resize(header.target_count() as usize, (0, "".to_string()));
+        let target_names = header.target_names();
+        for target_name in target_names {
+            let tid = header.tid(&target_name).unwrap();
+            refs[tid as usize] = (header.target_len(tid).unwrap(),
+                                std::str::from_utf8(target_name).unwrap().to_string());
+        }
+        if options.fixchr {
+            for r in &mut refs {
+                if Regex::new(r"^(chr|Zv9_)").unwrap().is_match(&r.1) {
+                    let refname = r.1.to_string();
+                    r.1.clear();
+                    r.1.push_str(&format!("chr{}", refname));
+                }
+            }
+        }
+
+        let mut interval_lists: HashMap<String,Vec<intervaltree::Interval<u8>>> = HashMap::new();
+        let mut read = rust_htslib::bam::record::Record::new();
+        while bam.read(&mut read).is_ok() {
+            let chr = refs[read.tid() as usize].1.clone();
+            if !interval_lists.contains_key(&chr) {
+                interval_lists.insert(chr.clone(), Vec::new());
+            }
+
+            let mut exons: Vec<(i32,i32)> = Vec::new();
+            cigar2exons(&mut exons, &read.cigar(), read.pos());
+
+            if exons.len() > 0 {
+                interval_lists.get_mut(&chr).unwrap().push(intervaltree::Interval::<u8> {
+                    start: read.pos()+1,
+                    stop: exons[exons.len()-1].1,
+                    value: if read.is_reverse() {'-' as u8} else {'+' as u8}
+                });
+            }
+        }
+        for (chr, list) in &interval_lists {
+            if intervals.is_none() {
+                intervals = Some(HashMap::new());
+            }
+            intervals.as_mut().unwrap().insert(chr.clone(), intervaltree::IntervalTree::new_from(list)); 
+        }
     }
 
     // // analyze the bam file and produce histograms
     if ! options.autostrand.is_empty() {
         // make both stranded and unstranded files
-        analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &mut intervals);
-        analyze_bam(&options, "uu", false, &mut intervals);
+        analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
+        analyze_bam(&options, "uu", false, &intervals);
     }
     else {
-         analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &mut intervals);
+         analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
     }
 }
