@@ -2,6 +2,7 @@
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
+use std::io::BufWriter;
 use std::io::stderr;
 use std::fs::File;
 use std::str;
@@ -90,7 +91,8 @@ fn write_chr(
        let strand = &key.1;
        let filename = open_file(options, read_number, strand, split_strand, fhs);
 
-       let ref mut fh = fhs.get_mut(&filename).unwrap().as_mut().unwrap();
+       let ref mut file = fhs.get_mut(&filename).unwrap().as_mut().unwrap();
+       let mut writer = BufWriter::new(file);
 
        // scan the histogram to produce the bedgraph data
        let mut start: usize = 0;
@@ -102,7 +104,7 @@ fn write_chr(
                && end < ref_length
            { end += 1 }
            if options.zero || (if start < histo.len() {histo[start]} else {0}) > 0 {
-               writeln!(fh, "{}\t{}\t{}\t{}",
+               writeln!(writer, "{}\t{}\t{}\t{}",
                         chr.1,
                         start,
                         end,
@@ -540,3 +542,4 @@ fn main() {
          analyze_bam(&options, &options.split_strand, !options.autostrand.is_empty(), &intervals);
     }
 }
+
