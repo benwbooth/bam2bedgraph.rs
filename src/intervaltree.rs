@@ -1,3 +1,4 @@
+// Adapted from: https://github.com/ekg/intervaltree
 use std::vec::Vec;
 
 #[derive(Copy, Clone)]
