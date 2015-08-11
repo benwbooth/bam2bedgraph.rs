@@ -346,29 +346,32 @@ fn analyze_bam(
 
             // run bedGraphToBigWig
             let bigwig_file = Regex::new(r"\.bedgraph$").unwrap().replace(fh.0, ".bw");
-            let command = vec![
-                "bedGraphToBigWig",
-                fh.0,
-                &genome_filename,
-                &bigwig_file];
-            let mut child = Command::new(&command[0]).args(&command[1..])
-                .spawn().unwrap_or_else(|e| {
-                    panic!("Failed to execute command: {:?}, {}", command, e);
+            let sorted_bedgraph = Regex::new(r"\.bedgraph$").unwrap().replace(fh.0, ".sorted.bedgraph");
+            for command in vec![
+                Command::new("sort").args(&["-k1,1","-k2,2n","-o", &sorted_bedgraph, fh.0]).env("LC_COLLATE","C"),
+                Command::new("bedGraphToBigWig").args(&[&sorted_bedgraph, &genome_filename, &bigwig_file])]
+            {
+                let mut child = command.spawn().unwrap_or_else(|e| {
+                        panic!("Failed to execute command: {:?}, {}", command, e);
+                    });
+                let exit_code = child.wait().unwrap_or_else(|e| {
+                    panic!("Failed to wait on command: {:?}: {}", command, e);
                 });
-            let exit_code = child.wait().unwrap_or_else(|e| {
-                panic!("Failed to wait on command: {:?}: {}", command, e);
-            });
-            if !exit_code.success() {
-                if exit_code.code().is_some() {
-                    panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code().unwrap(), command);
-                }
-                else {
-                    panic!("Command was interrupted: {:?}", command);
+                if !exit_code.success() {
+                    if exit_code.code().is_some() {
+                        panic!("Nonzero exit code {} returned from command: {:?}", exit_code.code().unwrap(), command);
+                    }
+                    else {
+                        panic!("Command was interrupted: {:?}", command);
+                    }
                 }
             }
-
             // remove the bedgraph file
             std::fs::remove_file(fh.0).unwrap_or_else(|e| {
+                writeln!(stderr(), "Failed to remove file {}: {:?}", fh.0, e).unwrap();
+            });
+            // remove the sorted bedgraph file
+            std::fs::remove_file(sorted_bedgraph).unwrap_or_else(|e| {
                 writeln!(stderr(), "Failed to remove file {}: {:?}", fh.0, e).unwrap();
             });
             // remove the genome file
