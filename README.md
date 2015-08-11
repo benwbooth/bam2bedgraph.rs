@@ -29,7 +29,7 @@ optional arguments:
   --nosplit
   --autostrand ANNOT_BAMFILE
                         Attempt to determine the strandedness of the input data
-                        using an annotation file. Must be an indexed .bam file.
+                        using an annotation file. Must be a .bam file.
   --strand [TYPE]       Split output bedgraph by strand: Possible values: u s r
                         uu us ur su ss sr ru rs rr, first char is read1, second
                         is read2, u=unstranded, s=stranded, r=reverse

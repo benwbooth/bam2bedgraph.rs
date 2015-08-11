@@ -430,7 +430,7 @@ fn main() {
             add_option(&["--split"], StoreTrue, "Use CIGAR string to split alignment into separate exons (default)").
             add_option(&["--nosplit"], StoreFalse, "");
         ap.refer(&mut options.autostrand).
-            add_option(&["--autostrand"], Store, "Attempt to determine the strandedness of the input data using an annotation file. Must be an indexed .bam file.").
+            add_option(&["--autostrand"], Store, "Attempt to determine the strandedness of the input data using an annotation file. Must be a .bam file.").
             metavar("ANNOT_BAMFILE");
         ap.refer(&mut options.split_strand).
             add_option(&["--strand"], Store, "Split output bedgraph by strand: Possible values: u s r uu us ur su ss sr ru rs rr, first char is read1, second is read2, u=unstranded, s=stranded, r=reverse").
