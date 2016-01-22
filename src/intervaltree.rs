@@ -2,18 +2,18 @@
 use std::vec::Vec;
 
 #[derive(Copy, Clone)]
-pub struct Interval<T: Sized+Copy> {
+pub struct Interval<T: Sized + Copy> {
     pub start: i32,
     pub stop: i32,
-    pub value: T
+    pub value: T,
 }
 
-impl<T: Sized+Copy> Interval<T> {
+impl<T: Sized + Copy> Interval<T> {
     pub fn new(s: i32, e: i32, v: T) -> Interval<T> {
-        Interval::<T>{
+        Interval::<T> {
             start: s,
             stop: e,
-            value: v
+            value: v,
         }
     }
 }
@@ -24,34 +24,35 @@ pub struct IntervalTreeOpts {
     pub minbucket: usize,
     pub leftextent: i32,
     pub rightextent: i32,
-    pub maxbucket: usize
+    pub maxbucket: usize,
 }
 
-pub struct IntervalTree<T: Sized+Copy> {
+pub struct IntervalTree<T: Sized + Copy> {
     intervals: Vec<Interval<T>>,
     left: Option<Box<IntervalTree<T>>>,
     right: Option<Box<IntervalTree<T>>>,
-    center: i32
+    center: i32,
 }
 
-impl<T: Sized+Copy> IntervalTree<T> {
+impl<T: Sized + Copy> IntervalTree<T> {
     pub fn new() -> IntervalTree<T> {
-        IntervalTree::<T>{
+        IntervalTree::<T> {
             intervals: Vec::new(),
             left: None,
             right: None,
-            center: 0
+            center: 0,
         }
     }
 
     pub fn new_from(ivals: &Vec<Interval<T>>) -> IntervalTree<T> {
-        Self::new_from_opts(ivals, &IntervalTreeOpts{
-            depth: 16,
-            minbucket: 64,
-            leftextent: 0,
-            rightextent: 0,
-            maxbucket: 512
-        })
+        Self::new_from_opts(ivals,
+                            &IntervalTreeOpts {
+                                depth: 16,
+                                minbucket: 64,
+                                leftextent: 0,
+                                rightextent: 0,
+                                maxbucket: 512,
+                            })
     }
     pub fn new_from_opts(ivals: &Vec<Interval<T>>, opts: &IntervalTreeOpts) -> IntervalTree<T> {
         let mut this = Self::new();
@@ -60,8 +61,7 @@ impl<T: Sized+Copy> IntervalTree<T> {
         opts.depth -= 1;
         if opts.depth == 0 || (ivals.len() < opts.minbucket && ivals.len() < opts.maxbucket) {
             this.intervals = ivals.clone();
-        }
-        else {
+        } else {
             if opts.leftextent == 0 && opts.rightextent == 0 {
                 ivals.sort_by(|a, b| a.start.cmp(&b.start));
             }
@@ -73,14 +73,15 @@ impl<T: Sized+Copy> IntervalTree<T> {
             if opts.leftextent != 0 || opts.rightextent != 0 {
                 leftp = opts.leftextent;
                 rightp = opts.rightextent;
-            }
-            else {
+            } else {
                 leftp = ivals[0].start;
                 let mut stops: Vec<i32> = Vec::new();
                 stops.resize(ivals.len(), 0);
                 for i in 0..ivals.len() {
                     stops[i] = ivals[i].stop;
-                    if rightp < stops[i] {rightp = stops[i]}
+                    if rightp < stops[i] {
+                        rightp = stops[i]
+                    }
                 }
             }
 
@@ -95,32 +96,32 @@ impl<T: Sized+Copy> IntervalTree<T> {
                 let interval: Interval<T> = ivals[i];
                 if interval.stop < this.center {
                     lefts.push(interval);
-                }
-                else if interval.start > this.center {
+                } else if interval.start > this.center {
                     rights.push(interval);
-                }
-                else {
+                } else {
                     this.intervals.push(interval);
                 }
             }
 
             if !lefts.is_empty() {
-                this.left = Some(Box::new(IntervalTree::new_from_opts(&mut lefts, &IntervalTreeOpts{
-                    depth: opts.depth,
-                    minbucket: opts.minbucket,
-                    leftextent: leftp,
-                    rightextent: centerp,
-                    maxbucket: opts.maxbucket
-                })));
+                this.left = Some(Box::new(IntervalTree::new_from_opts(&mut lefts,
+                                                                      &IntervalTreeOpts {
+                                                                          depth: opts.depth,
+                                                                          minbucket: opts.minbucket,
+                                                                          leftextent: leftp,
+                                                                          rightextent: centerp,
+                                                                          maxbucket: opts.maxbucket,
+                                                                      })));
             }
             if !rights.is_empty() {
-                this.right = Some(Box::new(IntervalTree::new_from_opts(&mut rights, &IntervalTreeOpts{
-                    depth: opts.depth,
-                    minbucket: opts.minbucket,
-                    leftextent: centerp,
-                    rightextent: rightp,
-                    maxbucket: opts.maxbucket
-                })));
+                this.right = Some(Box::new(IntervalTree::new_from_opts(&mut rights,
+                                                                       &IntervalTreeOpts {
+                                                                           depth: opts.depth,
+                                                                           minbucket: opts.minbucket,
+                                                                           leftextent: centerp,
+                                                                           rightextent: rightp,
+                                                                           maxbucket: opts.maxbucket,
+                                                                       })));
             }
         }
         this
@@ -136,7 +137,7 @@ impl<T: Sized+Copy> IntervalTree<T> {
             }
         }
 
-        if self.left.is_some() && start <= self.center  {
+        if self.left.is_some() && start <= self.center {
             self.left.as_ref().unwrap().find_overlapping(start, stop, overlapping);
         }
         if self.right.is_some() && stop >= self.center {
@@ -155,7 +156,7 @@ impl<T: Sized+Copy> IntervalTree<T> {
             }
         }
 
-        if self.left.is_some() && start <= self.center  {
+        if self.left.is_some() && start <= self.center {
             self.left.as_ref().unwrap().find_contained(start, stop, contained);
         }
         if self.right.is_some() && stop >= self.center {
@@ -163,13 +164,13 @@ impl<T: Sized+Copy> IntervalTree<T> {
         }
     }
 }
-impl<T: Sized+Copy> Clone for IntervalTree<T> {
+impl<T: Sized + Copy> Clone for IntervalTree<T> {
     fn clone(&self) -> Self {
         IntervalTree::<T> {
             intervals: self.intervals.clone(),
             left: self.left.clone(),
             right: self.right.clone(),
-            center: self.center
+            center: self.center,
         }
     }
 
@@ -178,14 +179,12 @@ impl<T: Sized+Copy> Clone for IntervalTree<T> {
         self.intervals = source.intervals.clone();
         if source.left.is_some() {
             self.left = source.left.clone();
-        }
-        else {
+        } else {
             self.left = None;
         }
         if source.right.is_some() {
             self.right = source.right.clone();
-        }
-        else {
+        } else {
             self.right = None;
         }
     }
