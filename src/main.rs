@@ -511,28 +511,33 @@ struct Options {
     autostrand: String,
     split_strand: String,
 }
+impl Options {
+    fn default() -> Options {
+        Options{
+          split_exons: false,
+          split_read: false,
+          zero: false,
+          paired_only: false,
+          proper_only: false,
+          primary_only: false,
+          trackline: false,
+          bigwig: false,
+          uniq: false,
+          fixchr: false,
+          bamfile: "".to_string(),
+          trackname: "".to_string(),
+          out: "".to_string(),
+          autostrand: "".to_string(),
+          split_strand: "uu".to_string(),
+        }
+    }
+}
 
 fn main() {
     // enable stack traces
     std::env::set_var("RUST_BACKTRACE", "1");
 
-    let mut options: Options = Options {
-        split_exons: false,
-        split_read: false,
-        zero: false,
-        paired_only: false,
-        proper_only: false,
-        primary_only: false,
-        trackline: false,
-        bigwig: false,
-        uniq: false,
-        fixchr: false,
-        bamfile: "".to_string(),
-        trackname: "".to_string(),
-        out: "".to_string(),
-        autostrand: "".to_string(),
-        split_strand: "uu".to_string(),
-    };
+    let mut options = Options { ..Options::default() };
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("Convert a bam file into a bedgraph/bigwig file.");
