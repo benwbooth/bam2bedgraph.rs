@@ -114,14 +114,15 @@ impl<T: Sized + Copy> IntervalTree<T> {
                                                                       })));
             }
             if !rights.is_empty() {
-                this.right = Some(Box::new(IntervalTree::new_from_opts(&mut rights,
-                                                                       &IntervalTreeOpts {
-                                                                           depth: opts.depth,
-                                                                           minbucket: opts.minbucket,
-                                                                           leftextent: centerp,
-                                                                           rightextent: rightp,
-                                                                           maxbucket: opts.maxbucket,
-                                                                       })));
+                this.right =
+                    Some(Box::new(IntervalTree::new_from_opts(&mut rights,
+                                                              &IntervalTreeOpts {
+                                                                  depth: opts.depth,
+                                                                  minbucket: opts.minbucket,
+                                                                  leftextent: centerp,
+                                                                  rightextent: rightp,
+                                                                  maxbucket: opts.maxbucket,
+                                                              })));
             }
         }
         this
