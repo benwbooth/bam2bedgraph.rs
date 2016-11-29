@@ -1,4 +1,3 @@
-#![feature(box_syntax)]
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
