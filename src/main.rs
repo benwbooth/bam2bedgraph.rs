@@ -1,3 +1,4 @@
+#![recursion_limit = "1024"]
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
@@ -8,9 +9,7 @@ use std::str;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::vec::Vec;
-use std::error::Error;
 use std::marker::Send;
-use std::marker::Sync;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -23,12 +22,20 @@ use rust_htslib::bam::Read;
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::Reader;
 
+#[macro_use]
+extern crate error_chain;
+
 mod intervaltree;
 
-fn cigar2exons(exons: &mut Vec<(i32, i32)>,
-               cigar: &[Cigar],
-               pos: i32)
-               -> Result<(), Box<Error + Send + Sync>> {
+error_chain!{
+    foreign_links {
+        ::std::io::Error, Io;
+        ::std::str::Utf8Error, Utf8;
+        ::regex::Error, Regex;
+    }
+}
+
+fn cigar2exons(exons: &mut Vec<(i32, i32)>, cigar: &[Cigar], pos: i32) -> Result<()> {
     let mut pos = pos;
     for op in cigar {
         match op {
@@ -57,7 +64,7 @@ fn open_file(options: &Options,
              strand: &str,
              split_strand: &str,
              fhs: &mut HashMap<String, Option<File>>)
-             -> Result<String, Box<Error + Send + Sync>> {
+             -> Result<String> {
     let mut prefix = PathBuf::new();
     prefix.set_file_name(&options.bamfile);
     prefix.set_extension("");
@@ -117,7 +124,7 @@ fn write_chr(options: &Options,
              histogram: &HashMap<(i32, String), Vec<i32>>,
              fhs: &mut HashMap<String, Option<File>>,
              split_strand: &str)
-             -> Result<(), Box<Error + Send + Sync>> {
+             -> Result<()> {
     for (key, histo) in histogram {
         let read_number = key.0;
         let strand = &key.1;
@@ -158,9 +165,9 @@ fn analyze_bam(options: &Options,
                split_strand: &str,
                autostrand_pass: bool,
                intervals: &Option<HashMap<String, intervaltree::IntervalTree<u8>>>)
-               -> Result<(), Box<Error + Send + Sync>> {
+               -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
-        return Err(From::from(format!("Bam file {} could not be found!", &options.bamfile)));
+        return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
     }
     let bam = (match Reader::from_path(&options.bamfile) {
         Ok(reader) => Ok(reader),
@@ -466,12 +473,13 @@ fn analyze_bam(options: &Options,
                 if !exit_code.success() {
                     if exit_code.code().is_some() {
                         let code = exit_code.code().ok_or("Error!")?;
-                        return Err(From::from(format!("Nonzero exit code {} returned from \
+                        return Err(format!("Nonzero exit code {} returned from \
                                                        command: {:?}",
-                                                      code,
-                                                      command)));
+                                           code,
+                                           command)
+                            .into());
                     } else {
-                        return Err(From::from(format!("Command was interrupted: {:?}", command)));
+                        return Err(format!("Command was interrupted: {:?}", command).into());
                     }
                 }
             }
@@ -525,7 +533,7 @@ impl Options {
     }
 }
 
-fn run() -> Result<(), Box<Error + Send + Sync>> {
+fn run() -> Result<()> {
     // enable stack traces
     std::env::set_var("RUST_BACKTRACE", "1");
 
@@ -621,17 +629,19 @@ fn run() -> Result<(), Box<Error + Send + Sync>> {
     }
     let regex = Regex::new(r"^[usr][usr]$")?;
     if !regex.is_match(&options.split_strand) {
-        return Err(From::from(format!("Invalid value for split_strand: \"{}\": values must be \
+        return Err(format!("Invalid value for split_strand: \"{}\": values must be \
                                        one of: u s r uu us ur su ss sr ru rs rr",
-                                      options.split_strand)));
+                           options.split_strand)
+            .into());
     }
 
     // read in the annotation file
     let mut intervals: Option<HashMap<String, intervaltree::IntervalTree<u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
-            return Err(From::from(format!("Autostrand Bam file {} could not be found!",
-                                          &options.autostrand)));
+            return Err(format!("Autostrand Bam file {} could not be found!",
+                               &options.autostrand)
+                .into());
         }
         let bam = match rust_htslib::bam::Reader::from_path(&options.autostrand) {
             Ok(r) => Ok(r),
@@ -710,7 +720,11 @@ fn run() -> Result<(), Box<Error + Send + Sync>> {
 fn main() {
     let result = run();
     if result.is_err() {
-        panic!(result.err());
+        writeln!(stderr(),
+                 "Backtrace: {:?}",
+                 result.err().unwrap().backtrace())
+            .unwrap();
+        std::process::exit(1);
     }
     std::process::exit(0);
 }

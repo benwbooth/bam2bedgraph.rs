@@ -7,6 +7,7 @@ authors = ["Ben Booth <benwbooth@gmail.com>"]
 argparse = "*"
 regex = "*"
 rust-htslib = "*"
+error-chain = "*"
 
 #[dependencies.rust-htslib]
 #git = "https://github.com/rust-bio/rust-htslib.git"

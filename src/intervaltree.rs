@@ -44,7 +44,7 @@ impl<T: Sized + Copy> IntervalTree<T> {
         }
     }
 
-    pub fn new_from(ivals: &Vec<Interval<T>>) -> IntervalTree<T> {
+    pub fn new_from(ivals: &[Interval<T>]) -> IntervalTree<T> {
         Self::new_from_opts(ivals,
                             &IntervalTreeOpts {
                                 depth: 16,
@@ -54,13 +54,13 @@ impl<T: Sized + Copy> IntervalTree<T> {
                                 maxbucket: 512,
                             })
     }
-    pub fn new_from_opts(ivals: &Vec<Interval<T>>, opts: &IntervalTreeOpts) -> IntervalTree<T> {
+    pub fn new_from_opts(ivals: &[Interval<T>], opts: &IntervalTreeOpts) -> IntervalTree<T> {
         let mut this = Self::new();
-        let ref mut ivals = ivals.clone();
-        let ref mut opts = opts.clone();
+        let mut ivals = ivals.to_vec().clone();
+        let mut opts = *opts;
         opts.depth -= 1;
         if opts.depth == 0 || (ivals.len() < opts.minbucket && ivals.len() < opts.maxbucket) {
-            this.intervals = ivals.clone();
+            this.intervals = ivals.to_vec().clone();
         } else {
             if opts.leftextent == 0 && opts.rightextent == 0 {
                 ivals.sort_by(|a, b| a.start.cmp(&b.start));
@@ -92,7 +92,7 @@ impl<T: Sized + Copy> IntervalTree<T> {
             let mut lefts: Vec<Interval<T>> = Vec::new();
             let mut rights: Vec<Interval<T>> = Vec::new();
 
-            for i in 0..ivals.len() {
+            for (i, _) in ivals.iter().enumerate() {
                 let interval: Interval<T> = ivals[i];
                 if interval.stop < this.center {
                     lefts.push(interval);
@@ -104,7 +104,7 @@ impl<T: Sized + Copy> IntervalTree<T> {
             }
 
             if !lefts.is_empty() {
-                this.left = Some(Box::new(IntervalTree::new_from_opts(&mut lefts,
+                this.left = Some(Box::new(IntervalTree::new_from_opts(&lefts,
                                                                       &IntervalTreeOpts {
                                                                           depth: opts.depth,
                                                                           minbucket: opts.minbucket,
@@ -115,7 +115,7 @@ impl<T: Sized + Copy> IntervalTree<T> {
             }
             if !rights.is_empty() {
                 this.right =
-                    Some(Box::new(IntervalTree::new_from_opts(&mut rights,
+                    Some(Box::new(IntervalTree::new_from_opts(&rights,
                                                               &IntervalTreeOpts {
                                                                   depth: opts.depth,
                                                                   minbucket: opts.minbucket,
