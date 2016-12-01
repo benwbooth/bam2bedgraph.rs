@@ -1,4 +1,5 @@
 #![recursion_limit = "1024"]
+#![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::io::Write;
@@ -32,6 +33,20 @@ error_chain!{
         ::std::io::Error, Io;
         ::std::str::Utf8Error, Utf8;
         ::regex::Error, Regex;
+    }
+    errors {
+        NoneError
+    }
+}
+trait ToResult<T> {
+    fn r(self) -> Result<T>;
+}
+impl<T> ToResult<T> for Option<T> {
+    fn r(self) -> Result<T> {
+        match self {
+            Some(v) => Ok(v),
+            None => Err(ErrorKind::NoneError.into()),
+        }
     }
 }
 
@@ -129,8 +144,8 @@ fn write_chr(options: &Options,
         let read_number = key.0;
         let strand = &key.1;
         let filename = open_file(options, read_number, strand, split_strand, fhs)?;
-        let mut f = fhs.get_mut(&filename).ok_or("None")?;
-        let file = f.as_mut().ok_or("None")?;
+        let mut f = fhs.get_mut(&filename).r()?;
+        let file = f.as_mut().r()?;
         let mut writer = BufWriter::new(file);
 
         // scan the histogram to produce the bedgraph data
@@ -179,8 +194,8 @@ fn analyze_bam(options: &Options,
     refs.resize(header.target_count() as usize, (0, "".to_string()));
     let target_names = header.target_names();
     for target_name in target_names {
-        let tid = header.tid(target_name).ok_or("None")?;
-        let target_len = header.target_len(tid).ok_or("None")?;
+        let tid = header.tid(target_name).r()?;
+        let target_len = header.target_len(tid).r()?;
         let target_name = std::str::from_utf8(target_name)?;
         refs[tid as usize] = (target_len, target_name.to_string());
     }
@@ -247,7 +262,7 @@ fn analyze_bam(options: &Options,
         // skip if it's not unique and we want unique alignments
         if options.uniq {
             let hits = read.aux("NH".to_string().as_bytes());
-            if hits == None || hits.ok_or("None")?.integer() != 1 {
+            if hits == None || hits.r()?.integer() != 1 {
                 continue;
             }
         }
@@ -256,8 +271,8 @@ fn analyze_bam(options: &Options,
         let mut get_exons: Vec<(i32, i32)> = Vec::new();
         cigar2exons(&mut get_exons, &read.cigar(), read.pos())?;
         if !options.split_exons && !get_exons.is_empty() {
-            let first = get_exons.get(0).ok_or("None")?;
-            let last = get_exons.get(get_exons.len() - 1).ok_or("None")?;
+            let first = get_exons.get(0).r()?;
+            let last = get_exons.get(get_exons.len() - 1).r()?;
             exons = vec![(first.0, last.1)];
         }
         let read_number = if read.is_secondary() { 2 } else { 1 };
@@ -267,20 +282,20 @@ fn analyze_bam(options: &Options,
         // let xs = read.aux("XS".as_bytes());
         let strand = 
         //if xs.is_some() {
-         //   str::from_utf8(xs.ok_or("None")?.string())?
+         //   str::from_utf8(xs.r()?.string())?
         //} else 
         if read_number == 1 {
-                if split_strand.chars().nth(0).ok_or("None")? == 'r' {
+                if split_strand.chars().nth(0).r()? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
-                } else if split_strand.chars().nth(0).ok_or("None")? == 's' {
+                } else if split_strand.chars().nth(0).r()? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
                 } else {
                     ""
                 }
             } else if read_number == 2 {
-                if split_strand.chars().nth(1).ok_or("None")? == 's' {
+                if split_strand.chars().nth(1).r()? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
-                } else if split_strand.chars().nth(1).ok_or("None")? == 'r' {
+                } else if split_strand.chars().nth(1).r()? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
                 } else {
                     ""
@@ -298,7 +313,7 @@ fn analyze_bam(options: &Options,
             // try to determine the strandedness of the data
             if autostrand_pass {
                 if intervals.is_some() {
-                    let intervals = intervals.as_ref().ok_or("None")?;
+                    let intervals = intervals.as_ref().r()?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
                         let mut overlapping_annot: Vec<intervaltree::Interval<u8>> = Vec::new();
                         intervals[&refs[lastchr as usize].1]
@@ -314,10 +329,10 @@ fn analyze_bam(options: &Options,
                                 'r'
                             };
                             if read_number == 1 {
-                                let at = autostrand_totals.get_mut(&strandtype).ok_or("None")?;
+                                let at = autostrand_totals.get_mut(&strandtype).r()?;
                                 *at += overlap_length as i64
                             } else if read_number == 2 {
-                                let at2 = autostrand_totals2.get_mut(&strandtype).ok_or("None")?;
+                                let at2 = autostrand_totals2.get_mut(&strandtype).r()?;
                                 *at2 += overlap_length as i64
                             }
                         }
@@ -333,12 +348,12 @@ fn analyze_bam(options: &Options,
                     refs[read.tid() as usize].0 = exon.1 as u32;
                 }
                 if histogram[&tuple].len() < ref_length as usize {
-                    let h = histogram.get_mut(&tuple).ok_or("None")?;
+                    let h = histogram.get_mut(&tuple).r()?;
                     h.resize(ref_length as usize, 0);
                 }
 
                 for pos in exon.0..exon.1 {
-                    let h = histogram.get_mut(&tuple).ok_or("None")?;
+                    let h = histogram.get_mut(&tuple).r()?;
                     (*h)[pos as usize] += 1;
                 }
             }
@@ -472,7 +487,7 @@ fn analyze_bam(options: &Options,
                 let exit_code = child.wait()?;
                 if !exit_code.success() {
                     if exit_code.code().is_some() {
-                        let code = exit_code.code().ok_or("None")?;
+                        let code = exit_code.code().r()?;
                         return Err(format!("Nonzero exit code {} returned from \
                                                        command: {:?}",
                                            code,
@@ -615,7 +630,7 @@ fn run() -> Result<()> {
                    &mut std::io::sink())
             .is_err() {
             let name = if std::env::args().count() > 0 {
-                std::env::args().nth(0).ok_or("None")?
+                std::env::args().nth(0).r()?
             } else {
                 "unknown".to_string()
             };
@@ -653,8 +668,8 @@ fn run() -> Result<()> {
         refs.resize(header.target_count() as usize, (0, "".to_string()));
         let target_names = header.target_names();
         for target_name in target_names {
-            let tid = header.tid(target_name).ok_or("None")?;
-            let target_len = header.target_len(tid).ok_or("None")?;
+            let tid = header.tid(target_name).r()?;
+            let target_len = header.target_len(tid).r()?;
             let target_name = std::str::from_utf8(target_name)?;
             refs[tid as usize] = (target_len, target_name.to_string());
         }
@@ -681,7 +696,7 @@ fn run() -> Result<()> {
             cigar2exons(&mut exons, &read.cigar(), read.pos())?;
 
             if !exons.is_empty() {
-                let interval_list = interval_lists.get_mut(&chr).ok_or("None")?;
+                let interval_list = interval_lists.get_mut(&chr).r()?;
                 interval_list.push(intervaltree::Interval::new(read.pos() + 1,
                                                                exons[exons.len() - 1].1,
                                                                if read.is_reverse() {
@@ -695,7 +710,7 @@ fn run() -> Result<()> {
             if intervals.is_none() {
                 intervals = Some(HashMap::new());
             }
-            let interval = intervals.as_mut().ok_or("None")?;
+            let interval = intervals.as_mut().r()?;
             interval.insert(chr.clone(), intervaltree::IntervalTree::new_from(list));
         }
     }
