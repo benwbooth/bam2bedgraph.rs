@@ -10,7 +10,6 @@ use std::str;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::vec::Vec;
-use std::marker::Send;
 
 extern crate argparse;
 use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
@@ -28,27 +27,32 @@ extern crate error_chain;
 
 mod intervaltree;
 
-error_chain!{
-    foreign_links {
-        ::std::io::Error, Io;
-        ::std::str::Utf8Error, Utf8;
-        ::regex::Error, Regex;
+mod errors {
+    error_chain!{
+        foreign_links {
+            ::std::io::Error, Io;
+            ::std::str::Utf8Error, Utf8;
+            ::regex::Error, Regex;
+        }
+        errors {
+            NoneError
+        }
     }
-    errors {
-        NoneError
+    pub trait ToResult<T> {
+        fn r(self) -> Result<T>;
     }
-}
-trait ToResult<T> {
-    fn r(self) -> Result<T>;
-}
-impl<T> ToResult<T> for Option<T> {
-    fn r(self) -> Result<T> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(ErrorKind::NoneError.into()),
+    impl<T> ToResult<T> for Option<T> {
+        fn r(self) -> Result<T> {
+            match self {
+                Some(v) => Ok(v),
+                None => Err(ErrorKind::NoneError.into()),
+            }
         }
     }
 }
+
+use errors::*;
+use errors::ToResult;
 
 fn cigar2exons(exons: &mut Vec<(i32, i32)>, cigar: &[Cigar], pos: i32) -> Result<()> {
     let mut pos = pos;
@@ -549,9 +553,6 @@ impl Options {
 }
 
 fn run() -> Result<()> {
-    // enable stack traces
-    std::env::set_var("RUST_BACKTRACE", "1");
-
     let mut options = Options { ..Options::default() };
     {
         let mut ap = ArgumentParser::new();
@@ -733,13 +734,17 @@ fn run() -> Result<()> {
 }
 
 fn main() {
-    let result = run();
-    if result.is_err() {
-        writeln!(stderr(),
-                 "Backtrace: {:?}",
-                 result.err().unwrap().backtrace())
-            .unwrap();
-        std::process::exit(1);
+    // enable stack traces
+    std::env::set_var("RUST_BACKTRACE", "1");
+
+    if let Err(ref e) = run() {
+        println!("error: {}", e);
+        for e in e.iter().skip(1) {
+            println!("caused by: {}", e);
+        }
+        if let Some(backtrace) = e.backtrace() {
+            println!("backtrace: {:?}", backtrace);
+        }
+        ::std::process::exit(1);
     }
-    std::process::exit(0);
 }
