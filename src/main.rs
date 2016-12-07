@@ -1,7 +1,7 @@
 #![recursion_limit = "1024"]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
 use std::ascii::AsciiExt;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::io::BufWriter;
 use std::io::stderr;
@@ -82,7 +82,7 @@ fn open_file(options: &Options,
              read_number: i32,
              strand: &str,
              split_strand: &str,
-             fhs: &mut HashMap<String, Option<File>>)
+             fhs: &mut BTreeMap<String, Option<File>>)
              -> Result<String> {
     let mut prefix = PathBuf::new();
     prefix.set_file_name(&options.bamfile);
@@ -140,8 +140,8 @@ fn open_file(options: &Options,
 
 fn write_chr(options: &Options,
              chr: &(u32, String),
-             histogram: &HashMap<(i32, String), Vec<i32>>,
-             fhs: &mut HashMap<String, Option<File>>,
+             histogram: &BTreeMap<(i32, String), Vec<i32>>,
+             fhs: &mut BTreeMap<String, Option<File>>,
              split_strand: &str)
              -> Result<()> {
     for (key, histo) in histogram {
@@ -183,7 +183,7 @@ fn write_chr(options: &Options,
 fn analyze_bam(options: &Options,
                split_strand: &str,
                autostrand_pass: bool,
-               intervals: &Option<HashMap<String, intervaltree::IntervalTree<u8>>>)
+               intervals: &Option<BTreeMap<String, intervaltree::IntervalTree<u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
         return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
@@ -223,19 +223,19 @@ fn analyze_bam(options: &Options,
     }
 
     // build a lookup map for the refseqs
-    let mut refmap: HashMap<String, usize> = HashMap::new();
+    let mut refmap: BTreeMap<String, usize> = BTreeMap::new();
     for (i, _) in refs.iter().enumerate() {
         refmap.insert(refs[i].1.to_string(), i);
     }
 
     let mut lastchr: i32 = -1;
-    let mut fhs: HashMap<String, Option<File>> = HashMap::new();
-    let mut histogram: HashMap<(i32, String), Vec<i32>> = HashMap::new();
+    let mut fhs: BTreeMap<String, Option<File>> = BTreeMap::new();
+    let mut histogram: BTreeMap<(i32, String), Vec<i32>> = BTreeMap::new();
 
-    let mut autostrand_totals: HashMap<char, i64> = HashMap::new();
+    let mut autostrand_totals: BTreeMap<char, i64> = BTreeMap::new();
     autostrand_totals.insert('s', 0);
     autostrand_totals.insert('r', 0);
-    let mut autostrand_totals2: HashMap<char, i64> = HashMap::new();
+    let mut autostrand_totals2: BTreeMap<char, i64> = BTreeMap::new();
     autostrand_totals2.insert('s', 0);
     autostrand_totals2.insert('r', 0);
 
@@ -652,7 +652,7 @@ fn run() -> Result<()> {
     }
 
     // read in the annotation file
-    let mut intervals: Option<HashMap<String, intervaltree::IntervalTree<u8>>> = None;
+    let mut intervals: Option<BTreeMap<String, intervaltree::IntervalTree<u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
             return Err(format!("Autostrand Bam file {} could not be found!",
@@ -685,7 +685,7 @@ fn run() -> Result<()> {
             }
         }
 
-        let mut interval_lists: HashMap<String, Vec<intervaltree::Interval<u8>>> = HashMap::new();
+        let mut interval_lists: BTreeMap<String, Vec<intervaltree::Interval<u8>>> = BTreeMap::new();
         let mut read = rust_htslib::bam::record::Record::new();
         while bam.read(&mut read).is_ok() {
             let chr = refs[read.tid() as usize].1.clone();
@@ -709,7 +709,7 @@ fn run() -> Result<()> {
         }
         for (chr, list) in &interval_lists {
             if intervals.is_none() {
-                intervals = Some(HashMap::new());
+                intervals = Some(BTreeMap::new());
             }
             let interval = intervals.as_mut().r()?;
             interval.insert(chr.clone(), intervaltree::IntervalTree::new_from(list));
