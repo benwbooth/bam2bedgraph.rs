@@ -17,6 +17,10 @@ use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
 extern crate regex;
 use regex::Regex;
 
+extern crate theban_interval_tree;
+extern crate memrange;
+use memrange::Range;
+
 extern crate rust_htslib;
 use rust_htslib::bam::Read;
 use rust_htslib::bam::record::Cigar;
@@ -24,8 +28,6 @@ use rust_htslib::bam::Reader;
 
 #[macro_use]
 extern crate error_chain;
-
-mod intervaltree;
 
 mod errors {
     error_chain!{
@@ -54,18 +56,18 @@ mod errors {
 use errors::*;
 use errors::ToResult;
 
-fn cigar2exons(exons: &mut Vec<(i32, i32)>, cigar: &[Cigar], pos: i32) -> Result<()> {
+fn cigar2exons(exons: &mut Vec<(u64, u64)>, cigar: &[Cigar], pos: u64) -> Result<()> {
     let mut pos = pos;
     for op in cigar {
         match op {
             &Cigar::Match(length) => {
-                pos += length as i32;
-                exons.push((pos - length as i32, pos));
+                pos += length as u64;
+                exons.push((pos - length as u64, pos));
                 Ok(())
             }
             &Cigar::RefSkip(length) |
             &Cigar::Del(length) => {
-                pos += length as i32;
+                pos += length as u64;
                 Ok(())
             }
             &Cigar::Ins(_) |
@@ -183,7 +185,7 @@ fn write_chr(options: &Options,
 fn analyze_bam(options: &Options,
                split_strand: &str,
                autostrand_pass: bool,
-               intervals: &Option<BTreeMap<String, intervaltree::IntervalTree<u8>>>)
+               intervals: &Option<BTreeMap<String, theban_interval_tree::IntervalTree<u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
         return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
@@ -271,9 +273,9 @@ fn analyze_bam(options: &Options,
             }
         }
 
-        let mut exons: Vec<(i32, i32)> = Vec::new();
-        let mut get_exons: Vec<(i32, i32)> = Vec::new();
-        cigar2exons(&mut get_exons, &read.cigar(), read.pos())?;
+        let mut exons: Vec<(u64, u64)> = Vec::new();
+        let mut get_exons: Vec<(u64, u64)> = Vec::new();
+        cigar2exons(&mut get_exons, &read.cigar(), read.pos() as u64)?;
         if !options.split_exons && !get_exons.is_empty() {
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
@@ -319,15 +321,13 @@ fn analyze_bam(options: &Options,
                 if intervals.is_some() {
                     let intervals = intervals.as_ref().r()?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
-                        let mut overlapping_annot: Vec<intervaltree::Interval<u8>> = Vec::new();
-                        intervals[&refs[lastchr as usize].1]
-                            .find_overlapping(exon.0 + 1, exon.1, &mut overlapping_annot);
+                        for (_, interval) in intervals[&refs[lastchr as usize].1]
+                            .range(exon.0 + 1u64, exon.1)
+                            .enumerate() {
+                            let overlap_length = std::cmp::min(exon.1, interval.0.max) -
+                                                 std::cmp::max(exon.0, interval.0.min - 1);
 
-                        for interval in overlapping_annot {
-                            let overlap_length = std::cmp::min(exon.1, interval.stop) -
-                                                 std::cmp::max(exon.0, interval.start - 1);
-
-                            let strandtype = if read.is_reverse() == (interval.value == b'-') {
+                            let strandtype = if read.is_reverse() == (*interval.1 == b'-') {
                                 's'
                             } else {
                                 'r'
@@ -652,7 +652,7 @@ fn run() -> Result<()> {
     }
 
     // read in the annotation file
-    let mut intervals: Option<BTreeMap<String, intervaltree::IntervalTree<u8>>> = None;
+    let mut intervals: Option<BTreeMap<String, theban_interval_tree::IntervalTree<u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
             return Err(format!("Autostrand Bam file {} could not be found!",
@@ -685,7 +685,7 @@ fn run() -> Result<()> {
             }
         }
 
-        let mut interval_lists: BTreeMap<String, Vec<intervaltree::Interval<u8>>> = BTreeMap::new();
+        let mut interval_lists: BTreeMap<String, Vec<(Range, u8)>> = BTreeMap::new();
         let mut read = rust_htslib::bam::record::Record::new();
         while bam.read(&mut read).is_ok() {
             let chr = refs[read.tid() as usize].1.clone();
@@ -693,18 +693,13 @@ fn run() -> Result<()> {
                 interval_lists.insert(chr.clone(), Vec::new());
             }
 
-            let mut exons: Vec<(i32, i32)> = Vec::new();
-            cigar2exons(&mut exons, &read.cigar(), read.pos())?;
+            let mut exons: Vec<(u64, u64)> = Vec::new();
+            cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
 
             if !exons.is_empty() {
                 let interval_list = interval_lists.get_mut(&chr).r()?;
-                interval_list.push(intervaltree::Interval::new(read.pos() + 1,
-                                                               exons[exons.len() - 1].1,
-                                                               if read.is_reverse() {
-                                                                   b'-'
-                                                               } else {
-                                                                   b'+'
-                                                               }));
+                interval_list.push((Range::new((read.pos() + 1) as u64, exons[exons.len() - 1].1),
+                                    if read.is_reverse() { b'-' } else { b'+' }));
             }
         }
         for (chr, list) in &interval_lists {
@@ -712,7 +707,11 @@ fn run() -> Result<()> {
                 intervals = Some(BTreeMap::new());
             }
             let interval = intervals.as_mut().r()?;
-            interval.insert(chr.clone(), intervaltree::IntervalTree::new_from(list));
+            let mut tree = theban_interval_tree::IntervalTree::<u8>::new();
+            for l in list {
+                tree.insert(l.0, l.1);
+            }
+            interval.insert(chr.clone(), tree);
         }
     }
 

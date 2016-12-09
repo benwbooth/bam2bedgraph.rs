@@ -8,6 +8,8 @@ argparse = "*"
 regex = "*"
 rust-htslib = "*"
 error-chain = "*"
+memrange = "*"
+theban_interval_tree = "*"
 
 #[dependencies.rust-htslib]
 #git = "https://github.com/rust-bio/rust-htslib.git"
