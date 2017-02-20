@@ -32,9 +32,9 @@ extern crate error_chain;
 mod errors {
     error_chain!{
         foreign_links {
-            ::std::io::Error, Io;
-            ::std::str::Utf8Error, Utf8;
-            ::regex::Error, Regex;
+            Io(::std::io::Error) #[cfg(unix)];
+            Utf8(::std::str::Utf8Error);
+            Regex(::regex::Error);
         }
         errors {
             NoneError
