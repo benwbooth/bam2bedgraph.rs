@@ -6,9 +6,14 @@ authors = ["Ben Booth <benwbooth@gmail.com>"]
 [dependencies]
 argparse = "*"
 regex = "*"
-rust-htslib = "*"
 error-chain = "*"
 memrange = "*"
 theban_interval_tree = "*"
 structopt = "*"
 structopt-derive = "*"
+
+[dependencies.theban_interval_tree]
+git = "https://github.com/theban/interval-tree.git"
+
+[dependencies.rust-htslib]
+git = "https://github.com/rust-bio/rust-htslib.git"
