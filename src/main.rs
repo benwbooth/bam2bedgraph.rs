@@ -26,6 +26,12 @@ use rust_htslib::bam::Read;
 use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::Reader;
 
+extern crate structopt;
+#[macro_use]
+extern crate structopt_derive;
+
+use structopt::StructOpt;
+
 #[macro_use]
 extern crate error_chain;
 
@@ -513,132 +519,48 @@ fn analyze_bam(options: &Options,
     Ok(())
 }
 
+#[derive(StructOpt, Debug)]
+#[structopt(name = "example", about = "An example of StructOpt usage.")]
 struct Options {
+    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value = false)]
     split_exons: bool,
+    #[structopt(long = "read", help = "Split output bedgraph by read number", default_value = false)]
     split_read: bool,
+    #[structopt(long = "zero", help = "Pad output bedgraph with zeroes", default_value = false)]
     zero: bool,
+    #[structopt(long = "paired", help = "Only output paired read alignments", default_value = false)]
     paired_only: bool,
+    #[structopt(long = "proper", help = "Only output proper-paired read alignments", default_value = false)]
     proper_only: bool,
+    #[structopt(long = "primary", help = "Only output primary read alignments", default_value = false)]
     primary_only: bool,
+    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value = false)]
     trackline: bool,
+    #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)", default_value = false)]
     bigwig: bool,
+    #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)", default_value = false)]
     uniq: bool,
+    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible", default_value = false)]
     fixchr: bool,
+    #[structopt(long = "bamfile", help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE"]
     bamfile: String,
+    #[structopt(long = "trackname", help = "Name of track for the track line", default_value = "".to_string()), name="TRACKNAME"]
     trackname: String,
+    #[structopt(long = "out", help = "Output file prefix", default_value = "".to_string()), name="PREFIX"]
     out: String,
+    #[structopt(long = "autostrand", help = 
+        "Attempt to determine the strandedness of the input data using an \
+        annotation file. Must be a .bam file.", default_value = "".to_string()), name="AUTOSTRAND_FILE"]
     autostrand: String,
+    #[structopt(long = "split_strand", help =
+        "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
+        sr ru rs rr, first char is read1, second is read2, u=unstranded, \
+        s=stranded, r=reverse", default_value = "uu".to_string()), name="DESCRIPTION"]
     split_strand: String,
-}
-impl Options {
-    fn default() -> Options {
-        Options {
-            split_exons: false,
-            split_read: false,
-            zero: false,
-            paired_only: false,
-            proper_only: false,
-            primary_only: false,
-            trackline: false,
-            bigwig: false,
-            uniq: false,
-            fixchr: false,
-            bamfile: "".to_string(),
-            trackname: "".to_string(),
-            out: "".to_string(),
-            autostrand: "".to_string(),
-            split_strand: "uu".to_string(),
-        }
-    }
 }
 
 fn run() -> Result<()> {
-    let mut options = Options { ..Options::default() };
-    {
-        let mut ap = ArgumentParser::new();
-        ap.set_description("Convert a bam file into a bedgraph/bigwig file.");
-        ap.refer(&mut options.bamfile)
-            .add_argument("BAMFILE", Store, "Input BAM filename")
-            .required();
-        ap.refer(&mut options.split_exons)
-            .add_option(&["--split"],
-                        StoreTrue,
-                        "Use CIGAR string to split alignment into separate exons (default)")
-            .add_option(&["--nosplit"], StoreFalse, "");
-        ap.refer(&mut options.autostrand)
-            .add_option(&["--autostrand"],
-                        Store,
-                        "Attempt to determine the strandedness of the input data using an \
-                         annotation file. Must be a .bam file.")
-            .metavar("ANNOT_BAMFILE");
-        ap.refer(&mut options.split_strand)
-            .add_option(&["--strand"],
-                        Store,
-                        "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
-                         sr ru rs rr, first char is read1, second is read2, u=unstranded, \
-                         s=stranded, r=reverse")
-            .metavar("[TYPE]");
-        ap.refer(&mut options.split_read)
-            .add_option(&["--read"],
-                        StoreTrue,
-                        "Split output bedgraph by read number")
-            .add_option(&["--noread"], StoreFalse, "(default)");
-        ap.refer(&mut options.zero)
-            .add_option(&["--zero"], StoreTrue, "Pad output bedgraph with zeroes")
-            .add_option(&["--nozero"], StoreFalse, "(default)");
-        ap.refer(&mut options.fixchr)
-            .add_option(&["--fixchr"],
-                        StoreTrue,
-                        "Transform chromosome names to be UCSC-compatible")
-            .add_option(&["--nofixchr"], StoreFalse, "(default)");
-        ap.refer(&mut options.paired_only)
-            .add_option(&["--paired"],
-                        StoreTrue,
-                        "Only output paired read alignments")
-            .add_option(&["--nopaired"], StoreFalse, "(default)");
-        ap.refer(&mut options.proper_only)
-            .add_option(&["--proper"],
-                        StoreTrue,
-                        "Only output proper-paired read alignments")
-            .add_option(&["--noproper"], StoreFalse, "(default)");
-        ap.refer(&mut options.primary_only)
-            .add_option(&["--primary"], StoreTrue, "Only output primary alignments")
-            .add_option(&["--noprimary"], StoreFalse, "(default)");
-        ap.refer(&mut options.bigwig)
-            .add_option(&["--bigwig"],
-                        StoreTrue,
-                        "Output bigwig files (requires bedGraphToBigWig in $PATH)")
-            .add_option(&["--nobigwig"], StoreFalse, "(default)");
-        ap.refer(&mut options.uniq)
-            .add_option(&["--uniq"],
-                        StoreTrue,
-                        "Keep only unique alignments (NH:i:1)")
-            .add_option(&["--nouniq"], StoreFalse, "(default)");
-        ap.refer(&mut options.out)
-            .add_option(&["--out"], Store, "Output file prefix")
-            .metavar("FILE");
-        ap.refer(&mut options.trackline)
-            .add_option(&["--trackline"],
-                        StoreTrue,
-                        "Output a UCSC track line (default)")
-            .add_option(&["--notrackline"], StoreFalse, "");
-        ap.refer(&mut options.trackname)
-            .add_option(&["--trackname"], Store, "Name of track for the track line")
-            .metavar("TRACKNAME");
-
-        if ap.parse(std::env::args().collect(),
-                   &mut std::io::sink(),
-                   &mut std::io::sink())
-            .is_err() {
-            let name = if std::env::args().count() > 0 {
-                std::env::args().nth(0).r()?
-            } else {
-                "unknown".to_string()
-            };
-            ap.print_help(&name, &mut stderr())?;
-            std::process::exit(1);
-        }
-    }
+    let options = Opt::from_args();
     options.split_strand = options.split_strand.to_ascii_lowercase();
     if options.split_strand.len() == 1 {
         options.split_strand = options.split_strand + "u";
