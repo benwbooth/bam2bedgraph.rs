@@ -133,7 +133,7 @@ fn open_file(options: &Options,
     // initialize the file if needed
     if !fhs.contains_key(&filename) {
         let mut f = File::create(&filename)?;
-        if options.trackline {
+        if options.trackline && !options.bigwig {
             writeln!(f,
                      "track type=bedGraph name=\"{}\" description=\"{}\" visibility=full",
                      track_name,
@@ -281,8 +281,10 @@ fn analyze_bam(options: &Options,
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
             exons = vec![(first.0, last.1)];
+        } else {
+            exons.append(&mut get_exons);
         }
-        let read_number = if read.is_secondary() { 2 } else { 1 };
+        let read_number = if read.is_last_in_template() { 2 } else { 1 };
 
         // attempt to determine the strandedness of the transcript
         // read numbers match, is not reverse, is not flipped
@@ -609,10 +611,9 @@ fn run() -> Result<()> {
 
             let mut exons: Vec<(u64, u64)> = Vec::new();
             cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
-
-            if !exons.is_empty() {
-                let interval_list = interval_lists.get_mut(&chr).r()?;
-                interval_list.push((Range::new((read.pos() + 1) as u64, exons[exons.len() - 1].1),
+            let interval_list = interval_lists.get_mut(&chr).r()?;
+            for exon in exons {
+                interval_list.push((Range::new(exon.0 + 1, exon.1),
                                     if read.is_reverse() { b'-' } else { b'+' }));
             }
         }
