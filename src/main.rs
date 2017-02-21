@@ -38,6 +38,7 @@ mod errors {
             Io(::std::io::Error) #[cfg(unix)];
             Utf8(::std::str::Utf8Error);
             Regex(::regex::Error);
+            ReaderPath(::rust_htslib::bam::ReaderPathError);
         }
         errors {
             NoneError
@@ -193,10 +194,7 @@ fn analyze_bam(options: &Options,
     if !Path::new(&options.bamfile).exists() {
         return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
     }
-    let bam = (match Reader::from_path(&options.bamfile) {
-        Ok(reader) => Ok(reader),
-        Err(_) => Err("Error: BGZFError"),
-    })?;
+    let bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header();
 
     let mut refs: Vec<(u32, String)> = Vec::new();
@@ -578,10 +576,7 @@ fn run() -> Result<()> {
                                &options.autostrand)
                 .into());
         }
-        let bam = match rust_htslib::bam::Reader::from_path(&options.autostrand) {
-            Ok(r) => Ok(r),
-            Err(_) => Err("BGZFError!"),
-        }?;
+        let bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
         let header = bam.header();
 
         let mut refs: Vec<(u32, String)> = Vec::new();
