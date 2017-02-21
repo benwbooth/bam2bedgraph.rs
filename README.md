@@ -5,7 +5,7 @@ Convert .bam alignment files to bedgraph or bigwig format.
 
 Requires:
 
-- nightly version of Rust (use multirust to install it)
+- latest Rust stable (or nightly)
 
 To build:
 
@@ -14,44 +14,34 @@ Run ```cargo build```
 Help documentation:
 
 ```
-Usage:
-    ./target/release/bam2bedgraph [OPTIONS] BAMFILE
+bam2bedgraph 1.0.0
+Ben Booth <benwbooth@gmail.com>
+Convert bam files to bedgraph/bigWig format
 
-Convert a bam file into a bedgraph/bigwig file.
+USAGE:
+    bam2bedgraph [FLAGS] [OPTIONS] <BAMFILE>
 
-positional arguments:
-  BAMFILE               Input BAM filename
+FLAGS:
+        --bigwig     Output bigwig files (requires bedGraphToBigWig in $PATH)
+        --fixchr     Transform chromosome names to be UCSC-compatible
+    -h, --help       Prints help information
+        --paired     Only output paired read alignments
+        --primary    Only output primary read alignments
+        --proper     Only output proper-paired read alignments
+        --read       Split output bedgraph by read number
+        --uniq       Keep only unique alignments (NH:i:1)
+    -V, --version    Prints version information
+        --zero       Pad output bedgraph with zeroes
 
-optional arguments:
-  -h,--help             show this help message and exit
-  --split               Use CIGAR string to split alignment into separate exons
-                        (default)
-  --nosplit
-  --autostrand ANNOT_BAMFILE
-                        Attempt to determine the strandedness of the input data
-                        using an annotation file. Must be a .bam file.
-  --strand [TYPE]       Split output bedgraph by strand: Possible values: u s r
-                        uu us ur su ss sr ru rs rr, first char is read1, second
-                        is read2, u=unstranded, s=stranded, r=reverse
-  --read                Split output bedgraph by read number
-  --noread              (default)
-  --zero                Pad output bedgraph with zeroes
-  --nozero              (default)
-  --fixchr              Transform chromosome names to be UCSC-compatible
-  --nofixchr            (default)
-  --paired              Only output paired read alignments
-  --nopaired            (default)
-  --proper              Only output proper-paired read alignments
-  --noproper            (default)
-  --primary             Only output primary alignments
-  --noprimary           (default)
-  --bigwig              Output bigwig files (requires bedGraphToBigWig in
-                        $PATH)
-  --nobigwig            (default)
-  --uniq                Keep only unique alignments (NH:i:1)
-  --nouniq              (default)
-  --out FILE            Output file prefix
-  --trackline           Output a UCSC track line (default)
-  --notrackline
-  --trackname TRACKNAME Name of track for the track line
+OPTIONS:
+        --autostrand <AUTOSTRAND_FILE>    Attempt to determine the strandedness of the input data using an annotation file. Must be a .bam file. [default: ]
+        --split_strand <DESCRIPTION>      Split output bedgraph by strand: Possible values: u s r uu us ur su ss sr ru rs rr, first char is read1, second is
+                                          read2, u=unstranded, s=stranded, r=reverse [default: uu]
+        --out <PREFIX>                    Output file prefix [default: ]
+        --trackname <TRACKNAME>           Name of track for the track line [default: ]
+        --split <split_exons>             Use CIGAR string to split alignment into separate exons (default) [default: true]
+        --trackline <trackline>           Output a UCSC track line (default) [default: true]
+
+ARGS:
+    <BAMFILE>    Convert a bam file into a bedgraph/bigwig file.
 ```

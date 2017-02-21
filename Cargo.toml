@@ -1,6 +1,6 @@
 [package]
 name = "bam2bedgraph"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Ben Booth <benwbooth@gmail.com>"]
 
 [dependencies]
