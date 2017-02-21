@@ -15,3 +15,11 @@ git = "https://github.com/theban/interval-tree.git"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
+
+[lib]
+name = "bam2bedgraph"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bam2bedgraph"
+path = "src/bam2bedgraph.rs"

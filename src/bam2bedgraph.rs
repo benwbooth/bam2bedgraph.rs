@@ -20,7 +20,6 @@ use memrange::Range;
 
 extern crate rust_htslib;
 use rust_htslib::bam::Read;
-use rust_htslib::bam::record::Cigar;
 use rust_htslib::bam::Reader;
 
 extern crate structopt;
@@ -29,60 +28,10 @@ extern crate structopt_derive;
 
 use structopt::StructOpt;
 
-#[macro_use]
-extern crate error_chain;
-
-mod errors {
-    error_chain!{
-        foreign_links {
-            Io(::std::io::Error) #[cfg(unix)];
-            Utf8(::std::str::Utf8Error);
-            Regex(::regex::Error);
-            ReaderPath(::rust_htslib::bam::ReaderPathError);
-        }
-        errors {
-            NoneError
-        }
-    }
-    pub trait ToResult<T> {
-        fn r(self) -> Result<T>;
-    }
-    impl<T> ToResult<T> for Option<T> {
-        fn r(self) -> Result<T> {
-            match self {
-                Some(v) => Ok(v),
-                None => Err(ErrorKind::NoneError.into()),
-            }
-        }
-    }
-}
-
-use errors::*;
-use errors::ToResult;
-
-fn cigar2exons(exons: &mut Vec<(u64, u64)>, cigar: &[Cigar], pos: u64) -> Result<()> {
-    let mut pos = pos;
-    for op in cigar {
-        match op {
-            &Cigar::Match(length) => {
-                pos += length as u64;
-                exons.push((pos - length as u64, pos));
-                Ok(())
-            }
-            &Cigar::RefSkip(length) |
-            &Cigar::Del(length) => {
-                pos += length as u64;
-                Ok(())
-            }
-            &Cigar::Ins(_) |
-            &Cigar::SoftClip(_) |
-            &Cigar::HardClip(_) |
-            &Cigar::Pad(_) => Ok(()),
-            c => Err(format!("Bad CIGAR string: {:?}", c)),
-        }?;
-    }
-    Ok(())
-}
+extern crate bam2bedgraph;
+use bam2bedgraph::errors::*;
+use bam2bedgraph::errors::ToResult;
+use bam2bedgraph::cigar2exons;
 
 fn open_file(options: &Options,
              read_number: i32,
@@ -557,7 +506,7 @@ struct Options {
 }
 
 fn run() -> Result<()> {
-    let mut options: Options = StructOpt::from_args();
+    let mut options = Options::from_args();
     options.split_strand = options.split_strand.to_ascii_lowercase();
     if options.split_strand.len() == 1 {
         options.split_strand = options.split_strand + "u";
