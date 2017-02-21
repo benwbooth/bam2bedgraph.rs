@@ -11,9 +11,6 @@ use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::vec::Vec;
 
-extern crate argparse;
-use argparse::{ArgumentParser, StoreTrue, StoreFalse, Store};
-
 extern crate regex;
 use regex::Regex;
 
@@ -396,8 +393,8 @@ fn analyze_bam(options: &Options,
     }
 
     // close the filehandles
-    for (_, fh) in &mut fhs {
-        *fh = None;
+    for fh in &mut fhs {
+        *fh.1 = None;
     }
 
     if autostrand_pass {
@@ -486,8 +483,8 @@ fn analyze_bam(options: &Options,
 
             // run bedGraphToBigWig
             let regex = Regex::new(r"\.bedgraph$")?;
-            let bigwig_file = regex.replace(fh.0, ".bw");
-            let sorted_bedgraph = regex.replace(fh.0, ".sorted.bedgraph");
+            let bigwig_file = String::from(regex.replace(fh.0, ".bw"));
+            let sorted_bedgraph = String::from(regex.replace(fh.0, ".sorted.bedgraph"));
             for command in vec![Command::new("sort")
                                     .args(&["-k1,1", "-k2,2n", "-o", &sorted_bedgraph, fh.0])
                                     .env("LC_COLLATE", "C"),
@@ -511,7 +508,7 @@ fn analyze_bam(options: &Options,
             // remove the bedgraph file
             std::fs::remove_file(fh.0)?;
             // remove the sorted bedgraph file
-            std::fs::remove_file(sorted_bedgraph)?;
+            std::fs::remove_file(&sorted_bedgraph)?;
             // remove the genome file
             std::fs::remove_file(&genome_filename)?;
         }
@@ -520,47 +517,47 @@ fn analyze_bam(options: &Options,
 }
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "example", about = "An example of StructOpt usage.")]
+#[structopt(name = "bam2bedgraph", about = "Convert bam files to bedgraph/bigWig format")]
 struct Options {
-    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value = false)]
+    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value="true")]
     split_exons: bool,
-    #[structopt(long = "read", help = "Split output bedgraph by read number", default_value = false)]
+    #[structopt(long = "read", help = "Split output bedgraph by read number")]
     split_read: bool,
-    #[structopt(long = "zero", help = "Pad output bedgraph with zeroes", default_value = false)]
+    #[structopt(long = "zero", help = "Pad output bedgraph with zeroes")]
     zero: bool,
-    #[structopt(long = "paired", help = "Only output paired read alignments", default_value = false)]
+    #[structopt(long = "paired", help = "Only output paired read alignments")]
     paired_only: bool,
-    #[structopt(long = "proper", help = "Only output proper-paired read alignments", default_value = false)]
+    #[structopt(long = "proper", help = "Only output proper-paired read alignments")]
     proper_only: bool,
-    #[structopt(long = "primary", help = "Only output primary read alignments", default_value = false)]
+    #[structopt(long = "primary", help = "Only output primary read alignments")]
     primary_only: bool,
-    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value = false)]
+    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value="true")]
     trackline: bool,
-    #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)", default_value = false)]
+    #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)")]
     bigwig: bool,
-    #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)", default_value = false)]
+    #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)")]
     uniq: bool,
-    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible", default_value = false)]
+    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible")]
     fixchr: bool,
-    #[structopt(long = "bamfile", help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE"]
+    #[structopt(help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE")]
     bamfile: String,
-    #[structopt(long = "trackname", help = "Name of track for the track line", default_value = "".to_string()), name="TRACKNAME"]
+    #[structopt(long = "trackname", help = "Name of track for the track line", name="TRACKNAME", default_value="")]
     trackname: String,
-    #[structopt(long = "out", help = "Output file prefix", default_value = "".to_string()), name="PREFIX"]
+    #[structopt(long = "out", help = "Output file prefix", name="PREFIX", default_value="")]
     out: String,
     #[structopt(long = "autostrand", help = 
         "Attempt to determine the strandedness of the input data using an \
-        annotation file. Must be a .bam file.", default_value = "".to_string()), name="AUTOSTRAND_FILE"]
+        annotation file. Must be a .bam file.", name="AUTOSTRAND_FILE", default_value="")]
     autostrand: String,
     #[structopt(long = "split_strand", help =
         "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
         sr ru rs rr, first char is read1, second is read2, u=unstranded, \
-        s=stranded, r=reverse", default_value = "uu".to_string()), name="DESCRIPTION"]
+        s=stranded, r=reverse", default_value = "uu", name="DESCRIPTION")]
     split_strand: String,
 }
 
 fn run() -> Result<()> {
-    let options = Opt::from_args();
+    let mut options: Options = StructOpt::from_args();
     options.split_strand = options.split_strand.to_ascii_lowercase();
     if options.split_strand.len() == 1 {
         options.split_strand = options.split_strand + "u";

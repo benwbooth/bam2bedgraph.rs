@@ -4,11 +4,9 @@ version = "0.1.0"
 authors = ["Ben Booth <benwbooth@gmail.com>"]
 
 [dependencies]
-argparse = "*"
 regex = "*"
 error-chain = "*"
 memrange = "*"
-theban_interval_tree = "*"
 structopt = "*"
 structopt-derive = "*"
 
