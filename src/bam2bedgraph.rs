@@ -30,7 +30,6 @@ use structopt::StructOpt;
 
 extern crate bam2bedgraph;
 use bam2bedgraph::errors::*;
-use bam2bedgraph::errors::ToResult;
 use bam2bedgraph::cigar2exons;
 
 fn open_file(options: &Options,
