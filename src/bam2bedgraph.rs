@@ -1,6 +1,4 @@
-#![recursion_limit = "1024"]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
-use std::ascii::AsciiExt;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::io::BufWriter;
@@ -14,13 +12,13 @@ use std::vec::Vec;
 extern crate regex;
 use regex::Regex;
 
-extern crate theban_interval_tree;
-extern crate memrange;
-use memrange::Range;
-
 extern crate rust_htslib;
 use rust_htslib::bam::Read;
 use rust_htslib::bam::Reader;
+
+extern crate bio;
+use bio::data_structures::interval_tree::IntervalTree;
+use bio::utils::Interval;
 
 extern crate structopt;
 #[macro_use]
@@ -31,6 +29,46 @@ use structopt::StructOpt;
 extern crate bam2bedgraph;
 use bam2bedgraph::errors::*;
 use bam2bedgraph::cigar2exons;
+
+#[derive(StructOpt, Debug)]
+#[structopt(name = "bam2bedgraph", about = "Convert bam files to bedgraph/bigWig format")]
+struct Options {
+    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value="true")]
+    split_exons: bool,
+    #[structopt(long = "read", help = "Split output bedgraph by read number")]
+    split_read: bool,
+    #[structopt(long = "zero", help = "Pad output bedgraph with zeroes")]
+    zero: bool,
+    #[structopt(long = "paired", help = "Only output paired read alignments")]
+    paired_only: bool,
+    #[structopt(long = "proper", help = "Only output proper-paired read alignments")]
+    proper_only: bool,
+    #[structopt(long = "primary", help = "Only output primary read alignments")]
+    primary_only: bool,
+    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value="true")]
+    trackline: bool,
+    #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)")]
+    bigwig: bool,
+    #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)")]
+    uniq: bool,
+    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible")]
+    fixchr: bool,
+    #[structopt(help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE")]
+    bamfile: String,
+    #[structopt(long = "trackname", help = "Name of track for the track line", name="TRACKNAME", default_value="")]
+    trackname: String,
+    #[structopt(long = "out", help = "Output file prefix", name="PREFIX", default_value="")]
+    out: String,
+    #[structopt(long = "autostrand", help = 
+        "Attempt to determine the strandedness of the input data using an \
+        annotation file. Must be a .bam file.", name="AUTOSTRAND_FILE", default_value="")]
+    autostrand: String,
+    #[structopt(long = "split_strand", help =
+        "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
+        sr ru rs rr, first char is read1, second is read2, u=unstranded, \
+        s=stranded, r=reverse", default_value = "uu", name="DESCRIPTION")]
+    split_strand: String,
+}
 
 fn open_file(options: &Options,
              read_number: i32,
@@ -137,7 +175,7 @@ fn write_chr(options: &Options,
 fn analyze_bam(options: &Options,
                split_strand: &str,
                autostrand_pass: bool,
-               intervals: &Option<BTreeMap<String, theban_interval_tree::IntervalTree<u8>>>)
+               intervals: &Option<BTreeMap<String, IntervalTree<u64, u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
         return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
@@ -272,13 +310,11 @@ fn analyze_bam(options: &Options,
                 if intervals.is_some() {
                     let intervals = intervals.as_ref().r()?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
-                        for (_, interval) in intervals[&refs[lastchr as usize].1]
-                            .range(exon.0 + 1u64, exon.1)
-                            .enumerate() {
-                            let overlap_length = std::cmp::min(exon.1, interval.0.max) -
-                                                 std::cmp::max(exon.0, interval.0.min - 1);
+                        for r in intervals[&refs[lastchr as usize].1].find(exon.0..exon.1) {
+                            let overlap_length = std::cmp::min(exon.1, r.interval().end) -
+                                                 std::cmp::max(exon.0, r.interval().start);
 
-                            let strandtype = if read.is_reverse() == (*interval.1 == b'-') {
+                            let strandtype = if read.is_reverse() == (*r.data() == b'-') {
                                 's'
                             } else {
                                 'r'
@@ -464,49 +500,9 @@ fn analyze_bam(options: &Options,
     Ok(())
 }
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "bam2bedgraph", about = "Convert bam files to bedgraph/bigWig format")]
-struct Options {
-    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value="true")]
-    split_exons: bool,
-    #[structopt(long = "read", help = "Split output bedgraph by read number")]
-    split_read: bool,
-    #[structopt(long = "zero", help = "Pad output bedgraph with zeroes")]
-    zero: bool,
-    #[structopt(long = "paired", help = "Only output paired read alignments")]
-    paired_only: bool,
-    #[structopt(long = "proper", help = "Only output proper-paired read alignments")]
-    proper_only: bool,
-    #[structopt(long = "primary", help = "Only output primary read alignments")]
-    primary_only: bool,
-    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value="true")]
-    trackline: bool,
-    #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)")]
-    bigwig: bool,
-    #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)")]
-    uniq: bool,
-    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible")]
-    fixchr: bool,
-    #[structopt(help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE")]
-    bamfile: String,
-    #[structopt(long = "trackname", help = "Name of track for the track line", name="TRACKNAME", default_value="")]
-    trackname: String,
-    #[structopt(long = "out", help = "Output file prefix", name="PREFIX", default_value="")]
-    out: String,
-    #[structopt(long = "autostrand", help = 
-        "Attempt to determine the strandedness of the input data using an \
-        annotation file. Must be a .bam file.", name="AUTOSTRAND_FILE", default_value="")]
-    autostrand: String,
-    #[structopt(long = "split_strand", help =
-        "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
-        sr ru rs rr, first char is read1, second is read2, u=unstranded, \
-        s=stranded, r=reverse", default_value = "uu", name="DESCRIPTION")]
-    split_strand: String,
-}
-
 fn run() -> Result<()> {
     let mut options = Options::from_args();
-    options.split_strand = options.split_strand.to_ascii_lowercase();
+    options.split_strand = options.split_strand.to_lowercase();
     if options.split_strand.len() == 1 {
         options.split_strand = options.split_strand + "u";
     }
@@ -519,7 +515,7 @@ fn run() -> Result<()> {
     }
 
     // read in the annotation file
-    let mut intervals: Option<BTreeMap<String, theban_interval_tree::IntervalTree<u8>>> = None;
+    let mut intervals: Option<BTreeMap<String, IntervalTree<u64, u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
             return Err(format!("Autostrand Bam file {} could not be found!",
@@ -549,7 +545,7 @@ fn run() -> Result<()> {
             }
         }
 
-        let mut interval_lists: BTreeMap<String, Vec<(Range, u8)>> = BTreeMap::new();
+        let mut interval_lists: BTreeMap<String, Vec<(Interval<u64>, u8)>> = BTreeMap::new();
         let mut read = rust_htslib::bam::record::Record::new();
         while bam.read(&mut read).is_ok() {
             let chr = refs[read.tid() as usize].1.clone();
@@ -561,7 +557,7 @@ fn run() -> Result<()> {
             cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
             let interval_list = interval_lists.get_mut(&chr).r()?;
             for exon in exons {
-                interval_list.push((Range::new(exon.0 + 1, exon.1),
+                interval_list.push((Interval::new(exon.0..exon.1)?,
                                     if read.is_reverse() { b'-' } else { b'+' }));
             }
         }
@@ -570,9 +566,9 @@ fn run() -> Result<()> {
                 intervals = Some(BTreeMap::new());
             }
             let interval = intervals.as_mut().r()?;
-            let mut tree = theban_interval_tree::IntervalTree::<u8>::new();
+            let mut tree = IntervalTree::<u64, u8>::new();
             for l in list {
-                tree.insert(l.0, l.1);
+                tree.insert(l.0.clone(), l.1);
             }
             interval.insert(chr.clone(), tree);
         }

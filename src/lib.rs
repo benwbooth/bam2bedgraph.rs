@@ -4,11 +4,12 @@ use std::vec::Vec;
 
 extern crate regex;
 
-extern crate theban_interval_tree;
-extern crate memrange;
-
 extern crate rust_htslib;
 use rust_htslib::bam::record::Cigar;
+
+extern crate bio;
+
+extern crate csv;
 
 #[macro_use]
 extern crate error_chain;
@@ -20,6 +21,10 @@ pub mod errors {
             Utf8(::std::str::Utf8Error);
             Regex(::regex::Error);
             ReaderPath(::rust_htslib::bam::ReaderPathError);
+            IndexedReaderPath(::rust_htslib::bam::IndexedReaderPathError);
+            Seek(::rust_htslib::bam::SeekError);
+            Interval(::bio::utils::IntervalError);
+            Csv(::csv::Error);
         }
         errors {
             NoneError

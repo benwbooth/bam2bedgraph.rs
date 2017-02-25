@@ -6,12 +6,12 @@ authors = ["Ben Booth <benwbooth@gmail.com>"]
 [dependencies]
 regex = "*"
 error-chain = "*"
-memrange = "*"
 structopt = "*"
 structopt-derive = "*"
-
-[dependencies.theban_interval_tree]
-git = "https://github.com/theban/interval-tree.git"
+rayon = "*"
+bio = "*"
+csv = "*"
+peakbag = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
@@ -23,3 +23,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "bam2bedgraph"
 path = "src/bam2bedgraph.rs"
+
+[[bin]]
+name = "intronrpkm"
+path = "src/intronrpkm.rs"
