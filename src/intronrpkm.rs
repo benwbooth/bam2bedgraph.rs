@@ -51,9 +51,9 @@ struct Options {
     compare_constituitive: bool,
     #[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
     compare_cassette: bool,
-    #[structopt(long="bam1", short="1", help = "The set of .bam files to analyze where read1 indicates strand", name="BAMFILE")]
+    #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE")]
     bam1: Vec<String>,
-    #[structopt(long="bam2", short="2", help = "The set of .bam files to analyze where read2 indicates strand", name="BAMFILE")]
+    #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE")]
     bam2: Vec<String>,
     #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
     bam: Vec<String>,
