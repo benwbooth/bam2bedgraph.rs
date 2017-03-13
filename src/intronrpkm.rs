@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::process::Command;
+use std::cmp::Ordering::Less;
 
 extern crate regex;
 use regex::Regex;
@@ -43,12 +45,18 @@ struct Options {
     gene_type: Vec<String>,
     #[structopt(long="use_annotated_cassettes", help = "Should the annotated cassettes be used in reannotating?")]
     use_annotated_cassettes: bool,
+    #[structopt(long="splice_must_match", help = "Do we require splice junctions to match the constituitive splice starts?")]
+    splice_must_match: bool,
     #[structopt(long="compare_constituitive", help = "Should constituitve exons be compared?")]
     compare_constituitive: bool,
     #[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
     compare_cassette: bool,
-    #[structopt(help = "The set of .bam files to analyze", name="BAMFILE")]
-    bamfiles: Vec<String>,
+    #[structopt(long="bam1", short="1", help = "The set of .bam files to analyze where read1 indicates strand", name="BAMFILE")]
+    bam1: Vec<String>,
+    #[structopt(long="bam2", short="2", help = "The set of .bam files to analyze where read2 indicates strand", name="BAMFILE")]
+    bam2: Vec<String>,
+    #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
+    bam: Vec<String>,
 }
 
 #[derive(Default)]
@@ -332,18 +340,18 @@ impl IndexedAnnotation {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Clone)]
 struct Cassette {
     range: Range<u64>,
     cassette_row: Option<usize>,
 }
 
-#[derive(PartialEq, Eq, Hash)]
 struct ConstituitivePair {
     exon1_row: usize,
     exon2_row: usize,
     // start..end, optional cassette_row
     cassettes: Vec<Cassette>,
+    mapped_reads: IntervalTree<u64, String>,
 }
 
 fn find_constituitive_exons(annot: &IndexedAnnotation,
@@ -431,9 +439,10 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                         exon2_row: (p.0).1,
                         cassettes: (p.1).0.into_iter().
                             map(|c| Cassette {
-                                range: annot.rows[c].start-1..annot.rows[c].end, 
+                                range: (annot.rows[c].start-1)..annot.rows[c].end, 
                                 cassette_row: Some(c),
                             }).collect(),
+                        mapped_reads: IntervalTree::new(),
                     }).
                     collect();
                 exonpairs.append(&mut valid_constituitive_pairs);
@@ -447,25 +456,255 @@ fn reannotate_regions(
     annot: &IndexedAnnotation,
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
-    use_annotated_cassettes: bool) 
+    bamstrand: &[Option<bool>], 
+    use_annotated_cassettes: bool,
+    splice_must_match: bool) 
     -> Result<Vec<ConstituitivePair>>
 {
-    let reannotated = Vec::<ConstituitivePair>::new();
+    let mut reannotated = Vec::<ConstituitivePair>::new();
     for pair in pairs {
-        for bamfile in bamfiles {
+        let exon1 = &annot.rows[pair.exon1_row];
+        let exon2 = &annot.rows[pair.exon2_row];
+        let mut start_histo = vec![0u64; (exon2.end-exon1.start+1) as usize];
+        let mut end_histo = vec![0u64; (exon2.end-exon1.start+1) as usize];
+        let mut mapped_reads = IntervalTree::<u64, String>::new();
+        for (b, bamfile) in bamfiles.iter().enumerate() {
+            let read1strand = bamstrand[b];
             let mut bam = IndexedReader::from_path(bamfile)?;
             let chr = &annot.rows[pair.exon1_row].seqname;
             if let Some(tid) = bam.header.tid(&chr.clone().into_bytes()) {
-                let start = &annot.rows[pair.exon1_row].start;
+                let start = &annot.rows[pair.exon1_row].start-1;
                 let end = &annot.rows[pair.exon2_row].end;
-                bam.seek(tid, *start as u32, *end as u32)?;
-                for (i, record) in bam.records().enumerate() {
+                let strand_is_plus = &annot.rows[pair.exon1_row].strand == "+";
+                bam.seek(tid, start as u32, *end as u32)?;
+                for read in bam.records() {
+                    let read = read?;
+                    // make sure the read's strand matches
+                    if let Some(is_read1strand) = read1strand {
+                        if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
+                            continue;
+                        }
+                    }
+                    let mut exons = Vec::<(u64, u64)>::new();
+                    cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
+                    // calculate introns
+                    let mut introns = Vec::<(u64, u64)>::new();
+                    for (i, exon) in exons.iter().enumerate() {
+                        mapped_reads.insert(Interval::new(exon.0..exon.1)?, String::from_utf8(read.qname().to_vec())?);
+                        if i < exons.len()-1 {
+                            introns.push((exon.1, exons[i+1].0));
+                        }
+                    }
+                    let overlaps_constituitives = if splice_must_match {
+                            introns.iter().any(|intron| intron.0 == exon1.start-1)
+                        }
+                        else {
+                            exons.iter().any(|exon| 
+                                (exon1.start-1 < exon.1 && exon.0 < exon1.end) || 
+                                   (exon2.start-1 < exon.1 && exon.0 < exon2.end))
+                        };
+                    if overlaps_constituitives {
+                        for intron in &introns {
+                            start_histo[(intron.0-exon1.start+1) as usize] += 1;
+                            end_histo[(intron.1-exon1.start+1) as usize] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if use_annotated_cassettes {
+            // merge cassettes together in case any are overlapping
+            let mut sorted_cassettes = pair.cassettes.clone();
+            sorted_cassettes.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+            let mut exons = Vec::<Range<u64>>::new();
+            for higher in &sorted_cassettes {
+                if exons.is_empty() {
+                    exons.push(higher.range.clone());
+                }
+                else {
+                    let lower_start = exons[exons.len()-1].start;
+                    let lower_end = exons[exons.len()-1].end;
+                    if higher.range.start <= lower_end {
+                        let upper_bound = std::cmp::max(lower_end, higher.range.end);
+                        let exons_len = exons.len()-1;
+                        exons[exons_len] = lower_start..upper_bound;
+                    }
+                    else {
+                        exons.push(higher.range.clone());
+                    }
+                }
+            }
+            // find max peak for each exon start/stop
+            let mut reannotated_cassettes = Vec::<Cassette>::new();
+            for (i, exon) in exons.iter().enumerate() {
+                // find the start/stop with the max histogram value
+                let start_range_start = if i == 0 { 0usize } else { exons[i-1].end as usize };
+                let start_range = start_range_start..exon.end as usize;
+                let startidx = start_histo[start_range].iter().enumerate().max_by_key(|&(_, v)| v);
+                let start = match startidx {
+                    Some((s, _)) => s as u64 + exon1.start,
+                    None => exon.start,
+                };
+                let end_range = if i < exons.len()-1 { exon.start as usize..exons[i+1].start as usize } 
+                                else { exon.start as usize..end_histo.len() };
+                let endidx = end_histo[end_range].iter().enumerate().max_by_key(|&(_, v)| v);
+                let end = match endidx {
+                    Some((e, _)) => e as u64 + exon1.start,
+                    None => exon.end,
+                };
+                // add the reannotated cassette
+                reannotated_cassettes.push(Cassette {range: start..end, cassette_row: None});
+            }
+            let reannotated_pair = ConstituitivePair {
+                exon1_row: pair.exon1_row,
+                exon2_row: pair.exon2_row,
+                cassettes: pair.cassettes.clone(),
+                mapped_reads: mapped_reads,
+            };
+            reannotated.push(reannotated_pair);
+        }
+        else {
+          return Err("De-novo transcript reannotation is not yet supported!".into());
+        }
+    }
+    Ok(reannotated)
+}
+
+fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
+    let mut total_reads = 0u64;
+    for bamfile in bamfiles {
+        let mut cmd = Command::new("samtools");
+        cmd.args(&["idxstats",bamfile]);
+        let output = cmd.output()?;
+        if !output.status.success() {
+            return Err(format!("Command {:?} returned exit status {}", 
+                cmd, output.status.code().unwrap_or(-1)).into());
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        for line in stdout.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if let Some(reads_str) = cols.get(2) {
+                if let Ok(reads) = reads_str.parse::<u64>() {
+                    total_reads += reads;
                 }
             }
         }
     }
-    
-    Ok(reannotated)
+    Ok(total_reads)
+}
+
+struct RpkmStats {
+    gene_row: usize,
+    intron_rpkm: f64,
+    max_exon_rpkm: f64,
+    constituitive_rpkm: f64,
+    cassette_rpkm: f64,
+}
+
+fn compute_rpkm( 
+    annot: &IndexedAnnotation, 
+    pairs: &[ConstituitivePair],
+    total_reads: u64) 
+    -> Result<Vec<RpkmStats>> 
+{
+    let mut rpkmstats = Vec::<RpkmStats>::new();
+    for pair in pairs {
+        let mut transcript_parents = HashSet::<usize>::new();
+        if let Some(parents) = annot.row2parents.get(&pair.exon1_row) {
+            for parent in parents {
+                transcript_parents.insert(*parent);
+            }
+        }
+        if let Some(parents) = annot.row2parents.get(&pair.exon2_row) {
+            for parent in parents {
+                transcript_parents.insert(*parent);
+            }
+        }
+        let mut gene_parents = BTreeSet::<usize>::new();
+        for transcript_parent in &transcript_parents {
+            if let Some(parents) = annot.row2parents.get(transcript_parent) {
+                for parent in parents {
+                    gene_parents.insert(*parent);
+                }
+            }
+        }
+        // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
+        for gene_row in &gene_parents {
+            let mapped_reads = &pair.mapped_reads;
+            let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
+            let mut constituitive_reads = HashSet::<String>::new();
+            for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
+                constituitive_reads.insert(read.data().clone());
+            }
+            for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
+                constituitive_reads.insert(read.data().clone());
+            }
+            let constituitive_rpkm = ((1e10f64) * constituitive_reads.len() as f64) / (total_reads as f64 * constituitive_bases as f64);
+            
+            let mut cassette_bases = 0u64;
+            let mut cassette_reads = HashSet::<String>::new();
+            let mut intron_bases = 0u64;
+            let mut intron_reads = HashSet::<String>::new();
+            let mut max_exon_rpkm = 0f64;
+            if pair.cassettes.is_empty() {
+                intron_bases += (annot.rows[pair.exon2_row].start-1) - annot.rows[pair.exon1_row].end;
+                for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon1_row].end) {
+                    intron_reads.insert(read.data().clone());
+                }
+            }
+            else {
+                intron_bases += pair.cassettes[0].range.start - annot.rows[pair.exon1_row].end;
+                for read in mapped_reads.find(pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end) {
+                    intron_reads.insert(read.data().clone());
+                }
+                for (i, cassette) in pair.cassettes.iter().enumerate() {
+                    cassette_bases += cassette.range.end-cassette.range.start;
+                    let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
+                    for read in &reads {
+                        cassette_reads.insert(read.data().clone());
+                    }
+                    let exon_rpkm = ((1e10f64) * reads.len() as f64) / (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
+                    if max_exon_rpkm < exon_rpkm {
+                        max_exon_rpkm = exon_rpkm;
+                    }
+                    if i < pair.cassettes.len()-1 {
+                        intron_bases += pair.cassettes[i+1].range.start - cassette.range.end;
+                        for read in mapped_reads.find(cassette.range.end..pair.cassettes[i+1].range.start) {
+                            intron_reads.insert(read.data().clone());
+                        }
+                    }
+                }
+                intron_bases += (annot.rows[pair.exon2_row].start-1) - pair.cassettes[pair.cassettes.len()-1].range.end;
+                for read in mapped_reads.find(pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end) {
+                    intron_reads.insert(read.data().clone());
+                }
+            }
+            let cassette_rpkm = ((1e10f64) * cassette_reads.len() as f64) / (total_reads as f64 * cassette_bases as f64);
+            let intron_rpkm = ((1e10f64) * intron_reads.len() as f64) / (total_reads as f64 * intron_bases as f64);
+            rpkmstats.push(RpkmStats {
+                gene_row: *gene_row,
+                intron_rpkm: intron_rpkm,
+                max_exon_rpkm: max_exon_rpkm,
+                constituitive_rpkm: constituitive_rpkm,
+                cassette_rpkm: cassette_rpkm,
+            });
+            break;
+        }
+    }
+    Ok(rpkmstats)
+}
+
+fn print_rpkm_stats(annot: &IndexedAnnotation, rpkmstats: &mut[RpkmStats]) -> Result<()> {
+    // sort by intron_rpkm / max_exon_rpkm, descending
+    rpkmstats.sort_by(|a, b|
+        (b.intron_rpkm / b.max_exon_rpkm).partial_cmp(&(a.intron_rpkm / a.max_exon_rpkm)).unwrap_or(Less));
+    for rpkm in rpkmstats {
+        let gene = &annot.rows[rpkm.gene_row];
+        let gene_name = &gene.seqname;
+        let ratio = rpkm.intron_rpkm / rpkm.max_exon_rpkm;
+        println!("{}\t{}", gene_name, ratio);
+    }
+    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -476,22 +715,36 @@ fn run() -> Result<()> {
          else { options.gene_type.clone() }).into_iter().collect();
     options.transcript_type = 
         (if options.transcript_type.is_empty() { vec!["mRNA".to_string()] } 
-         else { options.transcript_type.clone()
-        }).into_iter().collect();
+         else { options.transcript_type.clone() }).into_iter().collect();
     options.exon_type =
         (if options.exon_type.is_empty() { vec!["CDS".to_string()] }
          else { options.exon_type.clone() }).into_iter().collect();
+    if !options.use_annotated_cassettes {
+        return Err("De-novo transcript reannotation is not yet supported!".into());
+    }
 
     let annot = IndexedAnnotation::from_file(&options.annotfile, 
         options.gene_type.get(0).r()?, 
         options.transcript_type.get(0).r()?)?;
     let exonpairs = find_constituitive_exons(&annot, &options)?;
-    let reannotated = reannotate_regions(
+    let mut bamfiles = Vec::<String>::new();
+    bamfiles.append(&mut options.bam1.clone());
+    bamfiles.append(&mut options.bam2.clone());
+    bamfiles.append(&mut options.bam.clone());
+    let mut bamstrand = Vec::<Option<bool>>::new();
+    bamstrand.append(&mut options.bam1.iter().map(|_| Some(true)).collect());
+    bamstrand.append(&mut options.bam2.iter().map(|_| Some(false)).collect());
+    bamstrand.append(&mut options.bam.iter().map(|_| None).collect());
+    let total_reads = get_bam_total_reads(&bamfiles)?;
+    let reannotated_pairs = reannotate_regions(
         &annot,
         &exonpairs, 
-        &options.bamfiles, 
-        options.use_annotated_cassettes);
-
+        &bamfiles, 
+        &bamstrand,
+        options.use_annotated_cassettes,
+        options.splice_must_match)?;
+    let mut rpkmstats = compute_rpkm(&annot, &reannotated_pairs, total_reads)?;
+    print_rpkm_stats(&annot, &mut rpkmstats)?;
     Ok(())
 }
 

@@ -19,8 +19,10 @@ pub mod errors {
         foreign_links {
             Io(::std::io::Error) #[cfg(unix)];
             Utf8(::std::str::Utf8Error);
+            FromUtf8(::std::string::FromUtf8Error);
             Regex(::regex::Error);
             ReaderPath(::rust_htslib::bam::ReaderPathError);
+            Read(::rust_htslib::bam::ReadError);
             IndexedReaderPath(::rust_htslib::bam::IndexedReaderPathError);
             Seek(::rust_htslib::bam::SeekError);
             Interval(::bio::utils::IntervalError);

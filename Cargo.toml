@@ -12,6 +12,7 @@ rayon = "*"
 bio = "*"
 csv = "*"
 peakbag = "*"
+itertools = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
