@@ -9,6 +9,15 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::process::Command;
 use std::cmp::Ordering::Less;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::BufRead;
+
+#[macro_use] 
+extern crate lazy_static;
+
+extern crate url;
+use url::percent_encoding::percent_decode;
 
 extern crate regex;
 use regex::Regex;
@@ -20,8 +29,6 @@ use rust_htslib::bam::IndexedReader;
 extern crate bio;
 use bio::data_structures::interval_tree::IntervalTree;
 use bio::utils::Interval;
-use bio::io::gff;
-use bio::io::gff::GffType;
 
 extern crate structopt;
 #[macro_use]
@@ -35,25 +42,25 @@ use bam2bedgraph::cigar2exons;
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
 struct Options {
-    #[structopt(help = "A genome annotation file in gtf/gff format", name="ANNOT_FILE")]
+    #[structopt(long="annot", short="a", help = "A genome annotation file in gtf/gff format", name="ANNOT_FILE")]
     annotfile: String,
-    #[structopt(long="exon_type", help = "The exon type(s) to search for", name="TYPE")]
+    #[structopt(long="exon_type", help = "The exon type(s) to search for", name="EXON_TYPE")]
     exon_type: Vec<String>,
-    #[structopt(long="transcript_type", help = "The transcript type(s) to search for", name="TYPE")]
+    #[structopt(long="transcript_type", help = "The transcript type(s) to search for", name="TRANSCRIPT_TYPE")]
     transcript_type: Vec<String>,
-    #[structopt(long="gene_type", help = "The gene type(s) to search for", name="TYPE")]
+    #[structopt(long="gene_type", help = "The gene type(s) to search for", name="GENE_TYPE")]
     gene_type: Vec<String>,
     #[structopt(long="use_annotated_cassettes", help = "Should the annotated cassettes be used in reannotating?")]
     use_annotated_cassettes: bool,
     #[structopt(long="splice_must_match", help = "Do we require splice junctions to match the constituitive splice starts?")]
     splice_must_match: bool,
-    #[structopt(long="compare_constituitive", help = "Should constituitve exons be compared?")]
-    compare_constituitive: bool,
-    #[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
-    compare_cassette: bool,
-    #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE")]
+    //#[structopt(long="compare_constituitive", help = "Should constituitve exons be compared?")]
+    //compare_constituitive: bool,
+    //#[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
+    //compare_cassette: bool,
+    #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE1")]
     bam1: Vec<String>,
-    #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE")]
+    #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE2")]
     bam2: Vec<String>,
     #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
     bam: Vec<String>,
@@ -99,27 +106,30 @@ impl Record {
     fn new() -> Record {
         Record { ..Default::default() }
     }
-    fn from_record(record: &gff::Record) -> Record {
-        let strand = match record.strand() {
-            Some(bio::io::Strand::Forward) => "+",
-            Some(bio::io::Strand::Reverse) => "-",
-            _ => ".",
-        };
-        let score = match record.score() {
-            Some(num) => num.to_string(),
-            _ => String::from("."),
-        };
-        Record {
-            seqname: String::from(record.seqname()),
-            source: String::from(record.source()),
-            feature_type: String::from(record.feature_type()),
-            start: *record.start(),
-            end: *record.end(),
-            score: score,
-            strand: String::from(strand),
-            frame: String::from(record.frame()),
-            attributes: record.attributes().clone(),
+    fn from_row(line: &str) -> Result<Record> {
+        lazy_static! {
+            static ref COMMENT: Regex = Regex::new(r"^#").unwrap();
         }
+        if COMMENT.is_match(line) {
+            return Err("Comment".into());
+        }
+        let fields: Vec<_> = line.split('\t').collect();
+        Ok(Record {
+            seqname: String::from(*fields.get(0).unwrap_or(&"")),
+            source: String::from(*fields.get(1).unwrap_or(&"")),
+            feature_type: String::from(*fields.get(2).unwrap_or(&"")),
+            start: fields.get(3).unwrap_or(&"0").parse::<u64>()?,
+            end: fields.get(4).unwrap_or(&"0").parse::<u64>()?,
+            score: String::from(*fields.get(5).unwrap_or(&"")),
+            strand: String::from(*fields.get(6).unwrap_or(&"")),
+            frame: String::from(*fields.get(7).unwrap_or(&"")),
+            attributes: fields.get(8).unwrap_or(&"").split(';').map(|a| {
+                let kv: Vec<_> = a.splitn(2, '=').collect();
+                let key = String::from(percent_decode(kv[0].as_bytes()).decode_utf8().unwrap());
+                let value = String::from(percent_decode(kv.get(1).unwrap_or(&"").as_bytes()).decode_utf8().unwrap());
+                (key, value)
+            }).collect(),
+        })
     }
 }
 
@@ -133,28 +143,29 @@ struct IndexedAnnotation {
 impl IndexedAnnotation {
     fn from_file(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
         // figure out the file type of the annotation file
-        let caps = Regex::new(r"\.([^.]*)$")?.captures(annotfile).r()?;
+        let caps = Regex::new(r"\.([^.]*)$")?.captures(annotfile).
+            ok_or_else(|| format!("Could not determine extension of file {}", annotfile))?;
         let ext = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
         let filetype = match ext.as_ref() {
-            "gff" | "gff3" => Ok(GffType::GFF3),
-            "gtf" | "gtf2" => Ok(GffType::GTF2),
+            "gff" | "gff3" => Ok("gff"),
+            "gtf" | "gtf2" => Ok("gtf"),
             ext => {
                 Err(format!("Don't know how to parse file {} with extension {}!",
                             annotfile,
                             ext))
             }
         }?;
-        // read all the records into a single vector
-        let mut reader = gff::Reader::from_file(&annotfile, filetype)?;
         let mut id2row = HashMap::<String, usize>::new();
         let mut rows = Vec::<Record>::new();
-        for r in reader.records().enumerate() {
-            let row = r.0;
-            let record = r.1?;
-            if let Some(id) = record.attributes().get("ID") {
-                id2row.insert(id.clone(), row);
+        let f = File::open(&annotfile)?;
+        let file = BufReader::new(&f);
+        for (row, line) in file.lines().enumerate() {
+            if let Ok(record) = Record::from_row(&line?) {
+                if let Some(id) = record.attributes.get("ID") {
+                    id2row.insert(id.clone(), row);
+                }
+                rows.push(record);
             }
-            rows.push(Record::from_record(&record));
         }
         // populate row2parents and row2children indices
         let mut row2parents = HashMap::<usize, BTreeSet<usize>>::new();
@@ -162,7 +173,7 @@ impl IndexedAnnotation {
         // make fake rows for GTF gene_id and transcript_id attributes
         let mut fake_rows = Vec::<Record>::new();
         match filetype {
-            GffType::GTF2 => {
+            "gtf" => {
                 let mut firstrow = HashMap::<&Record, usize>::new();
                 for (row, record) in rows.iter().enumerate() {
                     // in GTF, if two rows both have identical fields (except attributes), they
@@ -206,7 +217,7 @@ impl IndexedAnnotation {
                     }
                 }
             }
-            GffType::GFF3 => {
+            "gff" => {
                 for (row, record) in rows.iter().enumerate() {
                     if let Some(parent) = record.attributes.get("Parent") {
                         for p in parent.split(',') {

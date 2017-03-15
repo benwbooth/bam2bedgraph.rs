@@ -24,6 +24,7 @@ pub mod errors {
             ReaderPath(::rust_htslib::bam::ReaderPathError);
             Read(::rust_htslib::bam::ReadError);
             IndexedReaderPath(::rust_htslib::bam::IndexedReaderPathError);
+            ParseInt(::std::num::ParseIntError);
             Seek(::rust_htslib::bam::SeekError);
             Interval(::bio::utils::IntervalError);
             Csv(::csv::Error);
