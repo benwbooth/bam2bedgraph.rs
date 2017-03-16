@@ -183,8 +183,7 @@ fn analyze_bam(options: &Options,
     let bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header();
 
-    let mut refs: Vec<(u32, String)> = Vec::new();
-    refs.resize(header.target_count() as usize, (0, "".to_string()));
+    let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
     let target_names = header.target_names();
     for target_name in target_names {
         let tid = header.tid(target_name).r()?;
@@ -525,8 +524,7 @@ fn run() -> Result<()> {
         let bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
         let header = bam.header();
 
-        let mut refs: Vec<(u32, String)> = Vec::new();
-        refs.resize(header.target_count() as usize, (0, "".to_string()));
+        let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
         let target_names = header.target_names();
         for target_name in target_names {
             let tid = header.tid(target_name).r()?;

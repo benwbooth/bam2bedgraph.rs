@@ -11,13 +11,19 @@ structopt-derive = "*"
 rayon = "*"
 bio = "*"
 csv = "*"
-peakbag = "*"
 itertools = "*"
 url = "*"
 lazy_static = "*"
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
+
+[dependencies.linked-hash-map]
+version = "*"
+features = ["serde_impl"]
 
 [lib]
 name = "bam2bedgraph"

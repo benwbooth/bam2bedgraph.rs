@@ -14,6 +14,8 @@ extern crate csv;
 #[macro_use]
 extern crate error_chain;
 
+extern crate serde_json;
+
 pub mod errors {
     error_chain!{
         foreign_links {
@@ -28,6 +30,7 @@ pub mod errors {
             Seek(::rust_htslib::bam::SeekError);
             Interval(::bio::utils::IntervalError);
             Csv(::csv::Error);
+            Json(::serde_json::Error);
         }
         errors {
             NoneError

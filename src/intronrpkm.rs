@@ -10,14 +10,15 @@ use std::ops::Range;
 use std::process::Command;
 use std::cmp::Ordering::Less;
 use std::fs::File;
-use std::io::BufReader;
-use std::io::BufRead;
+use std::io::{BufReader, BufWriter, BufRead, Write};
+use std::io::stdout;
 
 #[macro_use] 
 extern crate lazy_static;
 
+#[macro_use]
 extern crate url;
-use url::percent_encoding::percent_decode;
+use url::percent_encoding::{percent_decode, utf8_percent_encode, SIMPLE_ENCODE_SET};
 
 extern crate regex;
 use regex::Regex;
@@ -39,17 +40,40 @@ extern crate bam2bedgraph;
 use bam2bedgraph::errors::*;
 use bam2bedgraph::cigar2exons;
 
+extern crate linked_hash_map;
+use linked_hash_map::LinkedHashMap;
+
+extern crate serde;
+use serde::ser::SerializeStruct;
+
+#[macro_use]
+extern crate serde_derive;
+
+extern crate serde_json;
+
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
 struct Options {
+    // input files
     #[structopt(long="annot", short="a", help = "A genome annotation file in gtf/gff format", name="ANNOT_FILE")]
     annotfile: String,
+    #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE1")]
+    bam1: Vec<String>,
+    #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE2")]
+    bam2: Vec<String>,
+    #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
+    bam: Vec<String>,
+    // output file
+    #[structopt(long="out", short="o", help = "Output file", name="ANNOT_FILE", default_value="-")]
+    outfile: String,
+    // feature types filter
     #[structopt(long="exon_type", help = "The exon type(s) to search for", name="EXON_TYPE")]
     exon_type: Vec<String>,
     #[structopt(long="transcript_type", help = "The transcript type(s) to search for", name="TRANSCRIPT_TYPE")]
     transcript_type: Vec<String>,
     #[structopt(long="gene_type", help = "The gene type(s) to search for", name="GENE_TYPE")]
     gene_type: Vec<String>,
+    // flags
     #[structopt(long="use_annotated_cassettes", help = "Should the annotated cassettes be used in reannotating?")]
     use_annotated_cassettes: bool,
     #[structopt(long="splice_must_match", help = "Do we require splice junctions to match the constituitive splice starts?")]
@@ -58,15 +82,25 @@ struct Options {
     //compare_constituitive: bool,
     //#[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
     //compare_cassette: bool,
-    #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE1")]
-    bam1: Vec<String>,
-    #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE2")]
-    bam2: Vec<String>,
-    #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
-    bam: Vec<String>,
+    
+    // debug output files
+    #[structopt(long="debug_annot", help = "Output the annotation as a gtf/gff debug file", name="DEBUG_ANNOT_FILE")]
+    debug_annot: Option<String>,
+    #[structopt(long="debug_annot_json", help = "Output the annotation as a debug test", name="DEBUG_ANNOT_JSON")]
+    debug_annot_json: Option<String>,
+    #[structopt(long="debug_exon_bigbed", help = "Output the annotation constituitive/cassette features", name="DEBUG_EXON_BIGBED")]
+    debug_exon_bigbed: Option<String>,
+    #[structopt(long="debug_start_bigwig", help = "Output the reannotation splice start sites as a bigwig file", name="DEBUG_START_BIGWIG_FILE")]
+    debug_start_bigwig: Option<String>,
+    #[structopt(long="debug_end_bigwig", help = "Output the reannotation splice end sites as a bigwig file", name="DEBUG_END_BIGWIG_FILE")]
+    debug_end_bigwig: Option<String>,
+    #[structopt(long="debug_reannot_bigbed", help = "Output the reannotation features as a bigbed file", name="DEBUG_REANNOT_BIGBED_FILE")]
+    debug_reannot_bigbed: Option<String>,
+    #[structopt(long="debug_region_bigbed", help = "Output the reannotated intron/exon region features as a bigbed file", name="DEBUG_REGION_BIGBED_FILE")]
+    debug_region_bigbed: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Record {
     seqname: String,
     source: String,
@@ -76,7 +110,7 @@ pub struct Record {
     score: String,
     strand: String,
     frame: String,
-    attributes: HashMap<String, String>,
+    attributes: LinkedHashMap<String, String>,
 }
 
 impl PartialEq for Record {
@@ -106,9 +140,10 @@ impl Record {
     fn new() -> Record {
         Record { ..Default::default() }
     }
-    fn from_row(line: &str) -> Result<Record> {
+    fn from_row(line: &str, filetype: &str) -> Result<Record> {
         lazy_static! {
             static ref COMMENT: Regex = Regex::new(r"^#").unwrap();
+            static ref GTF_ATTR: Regex = Regex::new(r#"^(?P<key>\S+)\s+(?:"(?P<qval>[^"]*)"|(?P<val>\S+));\s*"#).unwrap();
         }
         if COMMENT.is_match(line) {
             return Err("Comment".into());
@@ -123,13 +158,55 @@ impl Record {
             score: String::from(*fields.get(5).unwrap_or(&"")),
             strand: String::from(*fields.get(6).unwrap_or(&"")),
             frame: String::from(*fields.get(7).unwrap_or(&"")),
-            attributes: fields.get(8).unwrap_or(&"").split(';').map(|a| {
-                let kv: Vec<_> = a.splitn(2, '=').collect();
-                let key = String::from(percent_decode(kv[0].as_bytes()).decode_utf8().unwrap());
-                let value = String::from(percent_decode(kv.get(1).unwrap_or(&"").as_bytes()).decode_utf8().unwrap());
-                (key, value)
-            }).collect(),
+            attributes: if filetype == "gff" {
+                fields.get(8).unwrap_or(&"").split(';').map(|a| {
+                    let kv: Vec<_> = a.splitn(2, '=').collect();
+                    let key = String::from(percent_decode(kv[0].as_bytes()).decode_utf8().unwrap());
+                    let value = String::from(percent_decode(kv.get(1).unwrap_or(&"").as_bytes()).decode_utf8().unwrap());
+                    (key, value)
+                }).collect()
+            } else if filetype == "gtf" {
+                GTF_ATTR.captures_iter(fields.get(8).unwrap_or(&"")).map(|caps| {
+                    (caps["key"].to_string(), 
+                     caps.name("qval").unwrap_or_else(|| caps.name("val").unwrap()).as_str().to_string())
+                }).collect()
+            } else {
+                return Err(format!("Don't know how to read filetype {}", filetype).into());
+            },
         })
+    }
+    fn to_line(&self, filetype: &str) -> Result<String> {
+        define_encode_set! {
+            pub GFF_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'\t', '\r', '\n', ';', '%', '='}
+        }
+        match filetype {
+            "gff" => Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+                self.seqname, 
+                self.source, 
+                self.feature_type,
+                self.start,
+                self.end,
+                self.score,
+                self.strand,
+                self.frame,
+                self.attributes.iter().map(|(k,v)| 
+                    format!("{}={}", 
+                        utf8_percent_encode(k, GFF_ENCODE_SET), 
+                        utf8_percent_encode(v, GFF_ENCODE_SET))).
+                    collect::<Vec<_>>().join(";"))),
+            "gtf" => Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+                self.seqname, 
+                self.source, 
+                self.feature_type,
+                self.start,
+                self.end,
+                self.score,
+                self.strand,
+                self.frame,
+                self.attributes.iter().map(|(k,v)| 
+                    format!("{} \"{}\";", k, v)).collect::<Vec<_>>().join(" "))),
+            f => Err(format!("Unknown file format: {}", f).into()),
+        }
     }
 }
 
@@ -139,6 +216,28 @@ struct IndexedAnnotation {
     row2parents: HashMap<usize, Vec<usize>>,
     row2children: HashMap<usize, Vec<usize>>,
     tree: HashMap<String, IntervalTree<u64, usize>>,
+}
+impl serde::Serialize for IndexedAnnotation
+{
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where S: serde::Serializer
+    {
+        let mut ia = serializer.serialize_struct("IndexedAnnotation", 5)?;
+        ia.serialize_field("rows", &self.rows)?;
+        ia.serialize_field("id2row", &self.id2row)?;
+        ia.serialize_field("row2parents", &self.row2parents)?;
+        ia.serialize_field("row2children", &self.row2children)?;
+        let mut tree = HashMap::<String, Vec<((u64,u64),usize)>>::new();
+        for (chr,interval_tree) in &self.tree {
+            let mut nodes = Vec::<((u64, u64),usize)>::new();
+            for node in interval_tree.find(0..std::u64::MAX) {
+                nodes.push(((node.interval().start,node.interval().end), *node.data()));
+            }
+            tree.insert(chr.clone(), nodes);
+        }
+        ia.serialize_field("tree", &tree)?;
+        ia.end()
+    }
 }
 impl IndexedAnnotation {
     fn from_file(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
@@ -160,7 +259,7 @@ impl IndexedAnnotation {
         let f = File::open(&annotfile)?;
         let file = BufReader::new(&f);
         for (row, line) in file.lines().enumerate() {
-            if let Ok(record) = Record::from_row(&line?) {
+            if let Ok(record) = Record::from_row(&line?, filetype) {
                 if let Some(id) = record.attributes.get("ID") {
                     id2row.insert(id.clone(), row);
                 }
@@ -349,6 +448,101 @@ impl IndexedAnnotation {
             tree: tree,
         })
     }
+    
+    fn to_file(&self, filename: &str) -> Result<()> {
+        let mut output: BufWriter<Box<Write>> = BufWriter::new(
+            if filename == "-" { Box::new(stdout()) } 
+            else { Box::new(File::create(filename)?) });
+            
+        let caps = Regex::new(r"\.([^.]*)$")?.captures(filename).
+            ok_or_else(|| format!("Could not determine extension of file {}", filename))?;
+        let ext = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
+        let filetype = match ext.as_ref() {
+            "gtf" | "gtf2" => "gtf",
+            _ => "gff",
+        };
+        for (row, record) in self.rows.iter().enumerate() {
+            match filetype {
+                "gtf" => {
+                    if let Some(transcript_rows) = self.row2parents.get(&row) {
+                        for transcript_row in transcript_rows {
+                            let transcript = &self.rows[*transcript_row];
+                            if let Some(transcript_id) = transcript.attributes.get("ID") {
+                                if let Some(gene_rows) = self.row2parents.get(transcript_row) {
+                                    for gene_row in gene_rows {
+                                        let gene = &self.rows[*gene_row];
+                                        if let Some(gene_id) = gene.attributes.get("ID") {
+                                            let mut rec = Record {
+                                                seqname: record.seqname.clone(),
+                                                source: record.source.clone(),
+                                                feature_type: record.feature_type.clone(),
+                                                start: record.start,
+                                                end: record.end,
+                                                score: record.score.clone(),
+                                                strand: record.strand.clone(),
+                                                frame: record.frame.clone(),
+                                                attributes: LinkedHashMap::new(),
+                                            };
+                                            rec.attributes.insert("gene_id".to_string(), gene_id.clone());
+                                            rec.attributes.insert("transcript_id".to_string(), transcript_id.clone());
+                                            for (k,v) in &record.attributes {
+                                                if k != "gene_id" && k != "transcript_id" {
+                                                    rec.attributes.insert(k.clone(), v.clone());
+                                                }
+                                            }
+                                            output.write_fmt(format_args!("{}\n", rec.to_line(&filetype)?))?;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "gff" => {
+                    let mut rec = Record {
+                        seqname: record.seqname.clone(),
+                        source: record.source.clone(),
+                        feature_type: record.feature_type.clone(),
+                        start: record.start,
+                        end: record.end,
+                        score: record.score.clone(),
+                        strand: record.strand.clone(),
+                        frame: record.frame.clone(),
+                        attributes: LinkedHashMap::new(),
+                    };
+                    let mut parents = Vec::<String>::new();
+                    if let Some(parent_rows) = self.row2parents.get(&row) {
+                        for parent_row in parent_rows {
+                            let parent = &self.rows[*parent_row];
+                            if let Some(parent_id) = parent.attributes.get("ID") {
+                                parents.push(parent_id.clone());
+                            }
+                        }
+                    }
+                    for (k,v) in &record.attributes {
+                        if k == "Parent" {
+                            rec.attributes.insert(k.clone(), parents.join(","));
+                        }
+                        else {
+                            rec.attributes.insert(k.clone(), v.clone());
+                        }
+                    }
+                    output.write_fmt(format_args!("{}\n", rec.to_line(&filetype)?))?;
+                },
+                _ => panic!(),
+            }
+        }
+        Ok(())
+    }
+    
+    fn to_json(&self, json_file: &str) -> Result<()> {
+        let mut output: BufWriter<Box<Write>> = BufWriter::new(
+            if json_file == "-" { Box::new(stdout()) } 
+            else { Box::new(File::create(json_file)?) });
+        
+        serde_json::to_writer(&mut output, &self)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -368,9 +562,9 @@ struct ConstituitivePair {
 fn find_constituitive_exons(annot: &IndexedAnnotation,
                             options: &Options)
                             -> Result<Vec<ConstituitivePair>> {
-    let gene_types: HashSet<_> = options.gene_type.clone().into_iter().collect();
-    let transcript_types: HashSet<_> = options.transcript_type.clone().into_iter().collect();
-    let exon_types: HashSet<_> = options.exon_type.clone().into_iter().collect();
+    let gene_types: HashSet<_> = options.gene_type.iter().collect();
+    let transcript_types: HashSet<_> = options.transcript_type.iter().collect();
+    let exon_types: HashSet<_> = options.exon_type.iter().collect();
     
     // set default feature types
     let mut exonpairs = Vec::<ConstituitivePair>::new();
@@ -404,7 +598,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                             let mut constituitive = HashSet::<usize>::new();
                             'exon: for exon_row in &exon_rows {
                                 if let Some(parent_rows) = annot.row2parents.get(exon_row) {
-                                    let parents: HashSet<_> = parent_rows.into_iter().collect();
+                                    let parents: HashSet<_> = parent_rows.iter().collect();
                                     // are there any transcripts in this gene that this exon
                                     // does NOT have as a parent?
                                     for transcript_row in transcript_rows {
@@ -463,21 +657,53 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
     Ok(exonpairs)
 }
 
+fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<String,(u32,u32)>> {
+    let mut refs = LinkedHashMap::<String,(u32,u32)>::new();
+    let bam = IndexedReader::from_path(bamfile)?;
+    let header = bam.header();
+    let target_names = header.target_names();
+    for target_name in target_names {
+        let tid = header.tid(target_name).r()?;
+        let target_len = header.target_len(tid).r()?;
+        let target_name = std::str::from_utf8(target_name)?;
+        refs.insert(target_name.to_string(), (tid, target_len));
+    }
+    Ok(refs)
+}
+
 fn reannotate_regions(
     annot: &IndexedAnnotation,
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
-    use_annotated_cassettes: bool,
-    splice_must_match: bool) 
+    refs: &LinkedHashMap<String,(u32,u32)>,
+    options: &Options) 
     -> Result<Vec<ConstituitivePair>>
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
+    // bigwig histograms
+    let mut start_plus_bw_histo = HashMap::<String,Vec<u32>>::new();
+    let mut start_minus_bw_histo = HashMap::<String,Vec<u32>>::new();
+    let mut end_plus_bw_histo = HashMap::<String,Vec<u32>>::new();
+    let mut end_minus_bw_histo = HashMap::<String,Vec<u32>>::new();
+    // allocate the bigwig histograms
+    for (chr, &(_, length)) in refs {
+        if options.debug_start_bigwig.is_some() {
+            start_plus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
+            start_minus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
+        } 
+        if options.debug_end_bigwig.is_some() {
+            end_plus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
+            end_minus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
+        }
+    }
+    // store the refseq names and sizes
+    // iterate through each constituitive pair
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let mut start_histo = vec![0u64; (exon2.end-exon1.start+1) as usize];
-        let mut end_histo = vec![0u64; (exon2.end-exon1.start+1) as usize];
+        let mut start_histo = vec![0u32; (exon2.end-exon1.start+1) as usize];
+        let mut end_histo = vec![0u32; (exon2.end-exon1.start+1) as usize];
         let mut mapped_reads = IntervalTree::<u64, String>::new();
         for (b, bamfile) in bamfiles.iter().enumerate() {
             let read1strand = bamstrand[b];
@@ -486,7 +712,15 @@ fn reannotate_regions(
             if let Some(tid) = bam.header.tid(&chr.clone().into_bytes()) {
                 let start = &annot.rows[pair.exon1_row].start-1;
                 let end = &annot.rows[pair.exon2_row].end;
-                let strand_is_plus = &annot.rows[pair.exon1_row].strand == "+";
+                let strand = &annot.rows[pair.exon1_row].strand;
+                let strand_is_plus = strand == "+";
+                let mut start_bw_histogram = 
+                    if strand_is_plus { start_plus_bw_histo.get_mut(chr).r()? } 
+                    else { start_minus_bw_histo.get_mut(chr).r()? };
+                let mut end_bw_histogram = 
+                    if strand_is_plus { end_plus_bw_histo.get_mut(chr).r()? }
+                    else { end_minus_bw_histo.get_mut(chr).r()? };
+                
                 bam.seek(tid, start as u32, *end as u32)?;
                 for read in bam.records() {
                     let read = read?;
@@ -506,7 +740,7 @@ fn reannotate_regions(
                             introns.push((exon.1, exons[i+1].0));
                         }
                     }
-                    let overlaps_constituitives = if splice_must_match {
+                    let overlaps_constituitives = if options.splice_must_match {
                             introns.iter().any(|intron| intron.0 == exon1.start-1)
                         }
                         else {
@@ -518,12 +752,19 @@ fn reannotate_regions(
                         for intron in &introns {
                             start_histo[(intron.0-exon1.start+1) as usize] += 1;
                             end_histo[(intron.1-exon1.start+1) as usize] += 1;
+                            
+                            if options.debug_start_bigwig.is_some() {
+                                start_bw_histogram[intron.0 as usize] += 1;
+                            }
+                            if options.debug_end_bigwig.is_some() {
+                                end_bw_histogram[intron.1 as usize] += 1;
+                            }
                         }
                     }
                 }
             }
         }
-        if use_annotated_cassettes {
+        if options.use_annotated_cassettes {
             // merge cassettes together in case any are overlapping
             let mut sorted_cassettes = pair.cassettes.clone();
             sorted_cassettes.sort_by(|a, b| a.range.start.cmp(&b.range.start));
@@ -578,7 +819,79 @@ fn reannotate_regions(
           return Err("De-novo transcript reannotation is not yet supported!".into());
         }
     }
+    if options.debug_start_bigwig.is_some() { 
+        write_bigwig(&options.debug_start_bigwig.clone().r()?, &start_plus_bw_histo, refs, "+")?;
+        write_bigwig(&options.debug_start_bigwig.clone().r()?, &start_minus_bw_histo, refs, "-")?;
+    }
+    if options.debug_end_bigwig.is_some() { 
+        write_bigwig(&options.debug_end_bigwig.clone().r()?, &end_plus_bw_histo, refs, "+")?;
+        write_bigwig(&options.debug_end_bigwig.clone().r()?, &end_minus_bw_histo, refs, "-")?;
+    }
     Ok(reannotated)
+}
+
+fn write_bigwig(
+    file: &str, 
+    histogram: &HashMap<String,Vec<u32>>, 
+    refs: &LinkedHashMap<String,(u32,u32)>,
+    strand: &str) 
+    -> Result<()> 
+{
+    // write the bedgraph file
+    let bedgraph_file = format!("{}.{}.bedgraph", file, strand);
+    {   let mut bw = BufWriter::new(File::create(&bedgraph_file)?);
+        let mut start: usize = 0;
+        let mut end: usize = 0;
+        let mut chrs: Vec<_> = histogram.keys().collect();
+        // sort the chrs by ascii values. This is required by bedGraphToBigWig
+        chrs.sort_by_key(|a| a.as_bytes());
+        for chr in chrs {
+            let histo = &histogram[chr];
+            let ref_length = refs[chr.into()].1 as usize;
+            while start < ref_length {
+                while (if end < histo.len() { histo[end] } else { 0 }) ==
+                      (if start < histo.len() { histo[start] } else { 0 }) &&
+                      end < ref_length {
+                    end += 1
+                }
+                if (if start < histo.len() { histo[start] } else { 0 }) > 0 {
+                    if strand == "-" {
+                        writeln!(bw, "{}\t{}\t{}\t{}\n",
+                                 chr, start, end, -(histo[start] as i64))?;
+                    }
+                    else {
+                        writeln!(bw, "{}\t{}\t{}\t{}\n",
+                                 chr, start, end, histo[start])?;
+                    }
+                }
+                start = end;
+            }
+        }
+    }
+    
+    // write the genome file
+    let genome_filename = format!("{}.{}.genome", file, strand);
+    {   let mut genome_fh = File::create(&genome_filename)?;
+        for (chr, &(_, length)) in refs {
+            writeln!(genome_fh, "{}\t{}", chr, length)?;
+        }
+    }
+    
+    // call bedGraphToBigWig
+    let bigwig_file = format!("{}.{}.bw", file, strand);
+    let mut command = Command::new("bedGraphToBigWig");
+    command.args(&[&bedgraph_file, &genome_filename, &bigwig_file]);
+    let status = command.spawn()?.wait()?;
+    if !status.success() {
+        return Err(format!(
+            "Exit code {:?} returned from command {:?}", status.code(), command).into());
+    }
+    // remove the bedgraph file
+    std::fs::remove_file(&bedgraph_file)?;
+    // remove the genome file
+    std::fs::remove_file(&genome_filename)?;
+    
+    Ok(())
 }
 
 fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
@@ -705,7 +1018,11 @@ fn compute_rpkm(
     Ok(rpkmstats)
 }
 
-fn print_rpkm_stats(annot: &IndexedAnnotation, rpkmstats: &mut[RpkmStats]) -> Result<()> {
+fn write_rpkm_stats(outfile: &str, annot: &IndexedAnnotation, rpkmstats: &mut[RpkmStats]) -> Result<()> {
+    let mut output: BufWriter<Box<Write>> = BufWriter::new(
+        if outfile == "-" { Box::new(stdout()) } 
+        else { Box::new(File::create(outfile)?) });
+        
     // sort by intron_rpkm / max_exon_rpkm, descending
     rpkmstats.sort_by(|a, b|
         (b.intron_rpkm / b.max_exon_rpkm).partial_cmp(&(a.intron_rpkm / a.max_exon_rpkm)).unwrap_or(Less));
@@ -713,8 +1030,17 @@ fn print_rpkm_stats(annot: &IndexedAnnotation, rpkmstats: &mut[RpkmStats]) -> Re
         let gene = &annot.rows[rpkm.gene_row];
         let gene_name = &gene.seqname;
         let ratio = rpkm.intron_rpkm / rpkm.max_exon_rpkm;
-        println!("{}\t{}", gene_name, ratio);
+        output.write_fmt(format_args!("{}\t{}\n", gene_name, ratio))?;
     }
+    Ok(())
+}
+
+fn write_exon_bigbed(
+    pairs: &[ConstituitivePair], 
+    file: &str, 
+    refs: &LinkedHashMap<String,(u32,u32)>) 
+    -> Result<()> 
+{
     Ok(())
 }
 
@@ -737,7 +1063,14 @@ fn run() -> Result<()> {
     let annot = IndexedAnnotation::from_file(&options.annotfile, 
         options.gene_type.get(0).r()?, 
         options.transcript_type.get(0).r()?)?;
-    let exonpairs = find_constituitive_exons(&annot, &options)?;
+    if let Some(debug_annot) = options.debug_annot.clone() {
+        annot.to_file(&debug_annot)?; 
+    }
+    if let Some(debug_annot_json) = options.debug_annot_json.clone() {
+        annot.to_json(&debug_annot_json)?; 
+    }
+    
+    // organize bamfiles by read strand type
     let mut bamfiles = Vec::<String>::new();
     bamfiles.append(&mut options.bam1.clone());
     bamfiles.append(&mut options.bam2.clone());
@@ -746,16 +1079,30 @@ fn run() -> Result<()> {
     bamstrand.append(&mut options.bam1.iter().map(|_| Some(true)).collect());
     bamstrand.append(&mut options.bam2.iter().map(|_| Some(false)).collect());
     bamstrand.append(&mut options.bam.iter().map(|_| None).collect());
+    // get the chromosome names and sizes from the first bam file
+    if bamfiles.is_empty() {
+        return Err("No bam files were passed in!".into());
+    }
+    let refs = get_bam_refs(&bamfiles[0])?;
+    
+    // get the total bam reads
     let total_reads = get_bam_total_reads(&bamfiles)?;
+    
+    // find the constituitive exons
+    let exonpairs = find_constituitive_exons(&annot, &options)?;
+    if let Some(debug_exon_bigbed) = options.debug_exon_bigbed.clone() {
+        write_exon_bigbed(&exonpairs, &debug_exon_bigbed, &refs)?;
+    }
+        
     let reannotated_pairs = reannotate_regions(
         &annot,
         &exonpairs, 
         &bamfiles, 
         &bamstrand,
-        options.use_annotated_cassettes,
-        options.splice_must_match)?;
+        &refs,
+        &options)?;
     let mut rpkmstats = compute_rpkm(&annot, &reannotated_pairs, total_reads)?;
-    print_rpkm_stats(&annot, &mut rpkmstats)?;
+    write_rpkm_stats(&options.outfile, &annot, &mut rpkmstats)?;
     Ok(())
 }
 
