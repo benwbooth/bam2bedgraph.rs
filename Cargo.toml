@@ -14,12 +14,15 @@ csv = "*"
 itertools = "*"
 url = "*"
 lazy_static = "*"
-serde = "*"
 serde_derive = "*"
 serde_json = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
+
+[dependencies.serde]
+version = "*"
+features = ["std"]
 
 [dependencies.linked-hash-map]
 version = "*"
