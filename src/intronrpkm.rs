@@ -1100,7 +1100,7 @@ fn reannotate_regions(
         container multiWig
         aggregate none
         maxHeightPixels: 100:50:8
-        viewLimits 0:50
+        viewLimits -50:0
         priority 1
         "##)))?;
         write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-")?;
