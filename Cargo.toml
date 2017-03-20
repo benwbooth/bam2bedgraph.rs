@@ -16,6 +16,7 @@ url = "*"
 lazy_static = "*"
 serde_derive = "*"
 serde_json = "*"
+indoc = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"

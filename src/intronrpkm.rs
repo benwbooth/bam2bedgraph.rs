@@ -1,4 +1,5 @@
-#![feature(ordering_chaining)]
+#![feature(ordering_chaining,plugin)]
+#![plugin(indoc)]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
 use std::str;
 use std::vec::Vec;
@@ -12,6 +13,7 @@ use std::cmp::Ordering::Less;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
+use std::path::Path;
 
 #[macro_use] 
 extern crate lazy_static;
@@ -52,14 +54,17 @@ extern crate serde_derive;
 
 extern crate serde_json;
 
-// TODO: write trackdb, region bigbed, and log to stderr
+extern crate itertools;
+use itertools::Itertools;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
 struct Options {
     // input files
-    #[structopt(long="annot", short="a", help = "A genome annotation file in gtf/gff format", name="ANNOT_FILE")]
-    annotfile: String,
+    #[structopt(long="gff", help = "A genome annotation file in gff3 format", name="ANNOT_GFF_FILE")]
+    annotfile_gff: Option<String>,
+    #[structopt(long="gtf", help = "A genome annotation file in gtf format", name="ANNOT_GTF_FILE")]
+    annotfile_gtf: Option<String>,
     #[structopt(long="bam1", short="1", help = "The set of stranded .bam files to analyze where read1 indicates strand", name="BAMFILE1")]
     bam1: Vec<String>,
     #[structopt(long="bam2", short="2", help = "The set of stranded .bam files to analyze where read2 indicates strand", name="BAMFILE2")]
@@ -89,8 +94,10 @@ struct Options {
     //compare_cassette: bool,
     
     // debug output files
-    #[structopt(long="debug_annot", help = "Write the input annotation as a gtf/gff debug file", name="DEBUG_ANNOT_FILE")]
-    debug_annot: Option<String>,
+    #[structopt(long="debug_annot_gff", help = "Write the input annotation as a gff debug file", name="DEBUG_ANNOT_GFF_FILE")]
+    debug_annot_gff: Option<String>,
+    #[structopt(long="debug_annot_gtf", help = "Write the input annotation as a gtf debug file", name="DEBUG_ANNOT_GTF_FILE")]
+    debug_annot_gtf: Option<String>,
     #[structopt(long="debug_annot_bigbed", help = "Write the input annotation as a bigBed file", name="DEBUG_ANNOT_BIGBED_FILE")]
     debug_annot_bigbed: Option<String>,
     #[structopt(long="debug_annot_json", help = "Dump the indexed annotation as a debug test", name="DEBUG_ANNOT_JSON")]
@@ -101,8 +108,10 @@ struct Options {
     debug_bigwig: Option<String>,
     #[structopt(long="debug_reannot_bigbed", help = "Output the reannotated constituitive pairs as a bigbed file", name="DEBUG_REANNOT_BIGBED_FILE")]
     debug_reannot_bigbed: Option<String>,
-    #[structopt(long="debug_region_bigbed", help = "Output the reannotated intron/exon region features as a bigbed file", name="DEBUG_REGION_BIGBED_FILE")]
-    debug_region_bigbed: Option<String>,
+    #[structopt(long="debug_rpkm_region_bigbed", help = "Output the rpkm region features as a bigbed file", name="DEBUG_RPKM_REGION_BIGBED_FILE")]
+    debug_rpkm_region_bigbed: Option<String>,
+    #[structopt(long="debug_mapped_reads_bigbed", help = "Output the rpkm mapped reads as a bigbed file", name="DEBUG_MAPPED_READS_BIGBED_FILE")]
+    debug_mapped_reads_bigbed: Option<String>,
     #[structopt(long="debug_rpkmstats_json", help = "Dump the RpkmStats to a JSON file", name="DEBUG_RPKMSTATS_JSON")]
     debug_rpkmstats_json: Option<String>,
     #[structopt(long="debug_trackdb", help = "Write a UCSC trackDb.txt file with all the bigwigs/bigbeds", name="DEBUG_TRACKDB_FILE")]
@@ -186,38 +195,38 @@ impl Record {
             },
         })
     }
-    fn to_line(&self, filetype: &str) -> Result<String> {
+    
+    fn to_gtf(&self) -> Result<String> {
+        Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+            self.seqname, 
+            self.source, 
+            self.feature_type,
+            self.start,
+            self.end,
+            self.score,
+            self.strand,
+            self.frame,
+            self.attributes.iter().map(|(k,v)| format!("{} \"{}\";", k, v)).join(" ")))
+        
+    }
+    
+    fn to_gff(&self) -> Result<String> {
         define_encode_set! {
             pub GFF_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'\t', '\r', '\n', ';', '%', '='}
         }
-        match filetype {
-            "gff" => Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
-                self.seqname, 
-                self.source, 
-                self.feature_type,
-                self.start,
-                self.end,
-                self.score,
-                self.strand,
-                self.frame,
-                self.attributes.iter().map(|(k,v)| 
-                    format!("{}={}", 
-                        utf8_percent_encode(k, GFF_ENCODE_SET), 
-                        utf8_percent_encode(v, GFF_ENCODE_SET))).
-                    collect::<Vec<_>>().join(";"))),
-            "gtf" => Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
-                self.seqname, 
-                self.source, 
-                self.feature_type,
-                self.start,
-                self.end,
-                self.score,
-                self.strand,
-                self.frame,
-                self.attributes.iter().map(|(k,v)| 
-                    format!("{} \"{}\";", k, v)).collect::<Vec<_>>().join(" "))),
-            f => Err(format!("Unknown file format: {}", f).into()),
-        }
+        Ok(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+            self.seqname, 
+            self.source, 
+            self.feature_type,
+            self.start,
+            self.end,
+            self.score,
+            self.strand,
+            self.frame,
+            self.attributes.iter().map(|(k,v)| 
+                format!("{}={}", 
+                    utf8_percent_encode(k, GFF_ENCODE_SET), 
+                    utf8_percent_encode(v, GFF_ENCODE_SET))).join(";")))
     }
 }
 
@@ -251,20 +260,13 @@ impl serde::Serialize for IndexedAnnotation
     }
 }
 impl IndexedAnnotation {
-    fn from_file(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
-        // figure out the file type of the annotation file
-        let caps = Regex::new(r"\.([^.]*)$")?.captures(annotfile).
-            ok_or_else(|| format!("Could not determine extension of file {}", annotfile))?;
-        let ext = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
-        let filetype = match ext.as_ref() {
-            "gff" | "gff3" => Ok("gff"),
-            "gtf" | "gtf2" => Ok("gtf"),
-            ext => {
-                Err(format!("Don't know how to parse file {} with extension {}!",
-                            annotfile,
-                            ext))
-            }
-        }?;
+    fn from_gtf(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
+        IndexedAnnotation::from_file(annotfile, "gtf", gene_type, transcript_type)
+    }
+    fn from_gff(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
+        IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type)
+    }
+    fn from_file(annotfile: &str, filetype: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
         let mut id2row = HashMap::<String, usize>::new();
         let mut rows = Vec::<Record>::new();
         let f = File::open(&annotfile)?;
@@ -460,90 +462,86 @@ impl IndexedAnnotation {
         })
     }
     
-    fn to_file(&self, filename: &str) -> Result<()> {
+    fn to_gtf(&self, filename: &str) -> Result<()> {
         let mut output: BufWriter<Box<Write>> = BufWriter::new(
             if filename == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(filename)?) });
             
-        let caps = Regex::new(r"\.([^.]*)$")?.captures(filename).
-            ok_or_else(|| format!("Could not determine extension of file {}", filename))?;
-        let ext = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
-        let filetype = match ext.as_ref() {
-            "gtf" | "gtf2" => "gtf",
-            _ => "gff",
-        };
         for (row, record) in self.rows.iter().enumerate() {
-            match filetype {
-                "gtf" => {
-                    if let Some(transcript_rows) = self.row2parents.get(&row) {
-                        for transcript_row in transcript_rows {
-                            let transcript = &self.rows[*transcript_row];
-                            if let Some(transcript_id) = transcript.attributes.get("ID") {
-                                if let Some(gene_rows) = self.row2parents.get(transcript_row) {
-                                    for gene_row in gene_rows {
-                                        let gene = &self.rows[*gene_row];
-                                        if let Some(gene_id) = gene.attributes.get("ID") {
-                                            let mut rec = Record {
-                                                row: row,
-                                                seqname: record.seqname.clone(),
-                                                source: record.source.clone(),
-                                                feature_type: record.feature_type.clone(),
-                                                start: record.start,
-                                                end: record.end,
-                                                score: record.score.clone(),
-                                                strand: record.strand.clone(),
-                                                frame: record.frame.clone(),
-                                                attributes: LinkedHashMap::new(),
-                                            };
-                                            rec.attributes.insert("gene_id".to_string(), gene_id.clone());
-                                            rec.attributes.insert("transcript_id".to_string(), transcript_id.clone());
-                                            for (k,v) in &record.attributes {
-                                                if k != "gene_id" && k != "transcript_id" {
-                                                    rec.attributes.insert(k.clone(), v.clone());
-                                                }
-                                            }
-                                            output.write_fmt(format_args!("{}\n", rec.to_line(&filetype)?))?;
+            if let Some(transcript_rows) = self.row2parents.get(&row) {
+                for transcript_row in transcript_rows {
+                    let transcript = &self.rows[*transcript_row];
+                    if let Some(transcript_id) = transcript.attributes.get("ID") {
+                        if let Some(gene_rows) = self.row2parents.get(transcript_row) {
+                            for gene_row in gene_rows {
+                                let gene = &self.rows[*gene_row];
+                                if let Some(gene_id) = gene.attributes.get("ID") {
+                                    let mut rec = Record {
+                                        row: row,
+                                        seqname: record.seqname.clone(),
+                                        source: record.source.clone(),
+                                        feature_type: record.feature_type.clone(),
+                                        start: record.start,
+                                        end: record.end,
+                                        score: record.score.clone(),
+                                        strand: record.strand.clone(),
+                                        frame: record.frame.clone(),
+                                        attributes: LinkedHashMap::new(),
+                                    };
+                                    rec.attributes.insert("gene_id".to_string(), gene_id.clone());
+                                    rec.attributes.insert("transcript_id".to_string(), transcript_id.clone());
+                                    for (k,v) in &record.attributes {
+                                        if k != "gene_id" && k != "transcript_id" {
+                                            rec.attributes.insert(k.clone(), v.clone());
                                         }
                                     }
+                                    output.write_fmt(format_args!("{}\n", rec.to_gtf()?))?;
                                 }
                             }
                         }
                     }
-                },
-                "gff" => {
-                    let mut rec = Record {
-                        row: row,
-                        seqname: record.seqname.clone(),
-                        source: record.source.clone(),
-                        feature_type: record.feature_type.clone(),
-                        start: record.start,
-                        end: record.end,
-                        score: record.score.clone(),
-                        strand: record.strand.clone(),
-                        frame: record.frame.clone(),
-                        attributes: LinkedHashMap::new(),
-                    };
-                    let mut parents = Vec::<String>::new();
-                    if let Some(parent_rows) = self.row2parents.get(&row) {
-                        for parent_row in parent_rows {
-                            let parent = &self.rows[*parent_row];
-                            if let Some(parent_id) = parent.attributes.get("ID") {
-                                parents.push(parent_id.clone());
-                            }
-                        }
-                    }
-                    for (k,v) in &record.attributes {
-                        if k == "Parent" {
-                            rec.attributes.insert(k.clone(), parents.join(","));
-                        }
-                        else {
-                            rec.attributes.insert(k.clone(), v.clone());
-                        }
-                    }
-                    output.write_fmt(format_args!("{}\n", rec.to_line(&filetype)?))?;
-                },
-                _ => panic!(),
+                }
             }
+        }
+        Ok(())
+    }
+    
+    fn to_gff(&self, filename: &str) -> Result<()> {
+        let mut output: BufWriter<Box<Write>> = BufWriter::new(
+            if filename == "-" { Box::new(stdout()) } 
+            else { Box::new(File::create(filename)?) });
+            
+        for (row, record) in self.rows.iter().enumerate() {
+            let mut rec = Record {
+                row: row,
+                seqname: record.seqname.clone(),
+                source: record.source.clone(),
+                feature_type: record.feature_type.clone(),
+                start: record.start,
+                end: record.end,
+                score: record.score.clone(),
+                strand: record.strand.clone(),
+                frame: record.frame.clone(),
+                attributes: LinkedHashMap::new(),
+            };
+            let mut parents = Vec::<String>::new();
+            if let Some(parent_rows) = self.row2parents.get(&row) {
+                for parent_row in parent_rows {
+                    let parent = &self.rows[*parent_row];
+                    if let Some(parent_id) = parent.attributes.get("ID") {
+                        parents.push(parent_id.clone());
+                    }
+                }
+            }
+            for (k,v) in &record.attributes {
+                if k == "Parent" {
+                    rec.attributes.insert(k.clone(), parents.join(","));
+                }
+                else {
+                    rec.attributes.insert(k.clone(), v.clone());
+                }
+            }
+            output.write_fmt(format_args!("{}\n", rec.to_gff()?))?;
         }
         Ok(())
     }
@@ -557,13 +555,12 @@ impl IndexedAnnotation {
         Ok(())
     }
     
-    fn to_bigbed(&self, 
+    fn to_bed(&self, 
         file: &str, 
-        refs: &LinkedHashMap<String,(u32,u32)>,
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String])
-        -> Result<()> 
+        -> Result<()>
     {
         let exon_types = exon_types.iter().cloned().collect::<HashSet<String>>();
         let mut cds_types = cds_types.iter().cloned().collect::<HashSet<String>>();
@@ -621,22 +618,22 @@ impl IndexedAnnotation {
                             
                             // write the bed record
                             let score = 0;
-                            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
                             let start = self.rows[exons[0]].start-1;
                             let end = self.rows[exons[exons.len()-1]].end;
                             let line = &[
-                                transcript.seqname.clone(),
-                                start.to_string(),
-                                end.to_string(),
-                                transcript_name,
-                                score.to_string(),
-                                transcript.strand.clone(),
-                                (if cds.is_empty() { start } else { self.rows[cds[0]].start-1 }).to_string(),
-                                (if cds.is_empty() { start } else { self.rows[cds[cds.len()-1]].end }).to_string(),
-                                item_rgb.clone(),
-                                exons.len().to_string(),
-                                exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).collect::<Vec<_>>().join(","),
-                                exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).collect::<Vec<_>>().join(","),
+                                transcript.seqname.as_str(),
+                                &start.to_string(),
+                                &end.to_string(),
+                                &transcript_name,
+                                &score.to_string(),
+                                &transcript.strand,
+                                &(if cds.is_empty() { start } else { self.rows[cds[0]].start-1 }).to_string(),
+                                &(if cds.is_empty() { start } else { self.rows[cds[cds.len()-1]].end }).to_string(),
+                                item_rgb,
+                                &exons.len().to_string(),
+                                &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
+                                &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
                             ].join("\t");
                             writeln!(bw, "{}", line)?;
                         }
@@ -644,6 +641,21 @@ impl IndexedAnnotation {
                 }
             }
         }
+        Ok(())
+    }
+    
+    fn to_bigbed(&self, 
+        file: &str, 
+        refs: &LinkedHashMap<String,(u32,u32)>,
+        exon_types: &[String],
+        cds_types: &[String],
+        transcript_types: &[String],
+        trackdb: &mut BufWriter<Box<Write>>)
+        -> Result<()> 
+    {
+        // write the bed file
+        let bed_file = format!("{}.bed", file);
+        self.to_bed(&bed_file, exon_types, cds_types, transcript_types)?;
         
         // write the genome file
         let genome_filename = format!("{}.bb.genome", file);
@@ -654,9 +666,8 @@ impl IndexedAnnotation {
         }
         
         // call bedToBigBed
-        let bigbed_file = format!("{}.bb", file);
         let mut command = Command::new("bedToBigBed");
-        command.args(&["-type=bed12", "-tab", "extraIndex=name", &bed_file, &genome_filename, &bigbed_file]);
+        command.args(&["-type=bed12", "-tab", "extraIndex=name", &bed_file, &genome_filename, file]);
         let status = command.spawn()?.wait()?;
         if !status.success() {
             return Err(format!(
@@ -666,6 +677,23 @@ impl IndexedAnnotation {
         std::fs::remove_file(&bed_file)?;
         // remove the genome file
         std::fs::remove_file(&genome_filename)?;
+        
+        define_encode_set! {
+            pub PATH_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'+', '?', '&'}
+        }
+        let url = utf8_percent_encode(file, PATH_ENCODE_SET);
+        let track_name = Path::new(file).file_stem().r()?.to_str().r()?;
+        // write to the trackDb.txt file
+        trackdb.write_fmt(format_args!(indoc!(r##"
+        
+            track {}
+            type bigBed 12
+            bigDataUrl {}
+            shortLabel {}
+            longLabel {}
+            itemRgb On
+            visibility hide
+        "##), track_name, url, track_name, track_name))?;
         
         Ok(())
     }
@@ -816,6 +844,73 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
     Ok(exonpairs)
 }
 
+fn bed2bigbed(
+    bed_file: &str, 
+    bigbed_file: &str, 
+    refs: &LinkedHashMap<String,(u32,u32)>, 
+    sort_bed: bool,
+    remove_bed: bool,
+    trackdb: &mut BufWriter<Box<Write>>) 
+    -> Result<()> 
+{
+    // write the genome file
+    let genome_filename = format!("{}.genome", bigbed_file);
+    {   let mut genome_fh = File::create(&genome_filename)?;
+        for (chr, &(_, length)) in refs {
+            writeln!(genome_fh, "{}\t{}", chr, length)?;
+        }
+    }
+    
+    // sort the bed file
+    let sorted_bed_file = format!("{}.sorted.bed", bed_file);
+    if sort_bed {
+        let mut command = Command::new("sort");
+        command.args(&["-k1,1","-k2,2n","-o", &sorted_bed_file, bed_file]);
+        command.env("LC_COLLATE", "C");
+        let status = command.spawn()?.wait()?;
+        if !status.success() {
+            return Err(format!(
+                "Exit code {:?} returned from command {:?}", status.code(), command).into());
+        }
+    }
+    
+    // call bedToBigBed
+    let mut command = Command::new("bedToBigBed");
+    command.args(&["-type=bed12", "-tab", "extraIndex=name", 
+        if sort_bed {&sorted_bed_file} else {bed_file}, 
+        &genome_filename, bigbed_file]);
+    let status = command.spawn()?.wait()?;
+    if !status.success() {
+        return Err(format!(
+            "Exit code {:?} returned from command {:?}", status.code(), command).into());
+    }
+    // remove the bed file
+    if remove_bed { std::fs::remove_file(&bed_file)?; }
+    if remove_bed && sort_bed { std::fs::remove_file(&sorted_bed_file)?; }
+    // remove the genome file
+    std::fs::remove_file(&genome_filename)?;
+    
+    // write to the trackDb file
+    define_encode_set! {
+        pub PATH_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'+', '?', '&'}
+    }
+    let url = utf8_percent_encode(bigbed_file, PATH_ENCODE_SET);
+    let track_name = Path::new(bigbed_file).file_stem().r()?.to_str().r()?;
+    // write to the trackDb.txt file
+    trackdb.write_fmt(format_args!(indoc!(r##"
+    
+        track {}
+        type bigBed 12
+        bigDataUrl {}
+        shortLabel {}
+        longLabel {}
+        itemRgb On
+        visibility hide
+    "##), track_name, url, track_name, track_name))?;
+        
+    Ok(())
+}
+
 fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<String,(u32,u32)>> {
     let mut refs = LinkedHashMap::<String,(u32,u32)>::new();
     let bam = IndexedReader::from_path(bamfile)?;
@@ -836,7 +931,8 @@ fn reannotate_regions(
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
     refs: &LinkedHashMap<String,(u32,u32)>,
-    options: &Options) 
+    options: &Options,
+    trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<ConstituitivePair>>
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
@@ -977,10 +1073,38 @@ fn reannotate_regions(
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+")?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-")?;
-        write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+")?;
-        write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-")?;
+        
+        trackdb.write_fmt(format_args!(indoc!(r##"
+        
+        track debug_bigwig_+
+        shortLabel debug_bigwig_+
+        longLabel debug_bigwig_+
+        visibility hide
+        type bigWig
+        container multiWig
+        aggregate none
+        maxHeightPixels: 100:50:8
+        viewLimits 0:50
+        priority 1
+        "##)))?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+")?;
+        write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+")?;
+    
+        trackdb.write_fmt(format_args!(indoc!(r##"
+        
+        track debug_bigwig_-
+        shortLabel debug_bigwig_-
+        longLabel debug_bigwig_-
+        visibility hide
+        type bigWig
+        container multiWig
+        aggregate none
+        maxHeightPixels: 100:50:8
+        viewLimits 0:50
+        priority 1
+        "##)))?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-")?;
+        write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-")?;
     }
     Ok(reannotated)
 }
@@ -989,7 +1113,9 @@ fn write_bigwig(
     file: &str, 
     histogram: &HashMap<String,Vec<u32>>, 
     refs: &LinkedHashMap<String,(u32,u32)>,
-    strand: &str) 
+    strand: &str,
+    trackdb: &mut BufWriter<Box<Write>>,
+    parent: &str) 
     -> Result<()> 
 {
     // write the bedgraph file
@@ -1046,6 +1172,22 @@ fn write_bigwig(
     // remove the genome file
     std::fs::remove_file(&genome_filename)?;
     
+    // write to the trackDb file
+    define_encode_set! {
+        pub PATH_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'+', '?', '&'}
+    }
+    let url = utf8_percent_encode(&bigwig_file, PATH_ENCODE_SET);
+    let track_name = Path::new(&bigwig_file).file_stem().r()?.to_str().r()?;
+    // write to the trackDb.txt file
+    trackdb.write_fmt(format_args!(r##"
+    track {}
+    shortLabel {}
+    longLabel {}
+    type bigWig
+    parent {}
+    bigDataUrl {}
+    "##, track_name, track_name, track_name, parent, url))?;
+    
     Ok(())
 }
 
@@ -1084,97 +1226,226 @@ struct RpkmStats {
 fn compute_rpkm( 
     annot: &IndexedAnnotation, 
     pairs: &[ConstituitivePair],
-    total_reads: u64) 
+    total_reads: u64,
+    debug_rpkm_region_bigbed: &Option<String>,
+    debug_mapped_reads_bigbed: &Option<String>,
+    refs: &LinkedHashMap<String,(u32,u32)>,
+    trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<RpkmStats>> 
 {
     let mut rpkmstats = Vec::<RpkmStats>::new();
-    for pair in pairs {
-        let mut transcript_parents = HashSet::<usize>::new();
-        if let Some(parents) = annot.row2parents.get(&pair.exon1_row) {
-            for parent in parents {
-                transcript_parents.insert(*parent);
-            }
-        }
-        if let Some(parents) = annot.row2parents.get(&pair.exon2_row) {
-            for parent in parents {
-                transcript_parents.insert(*parent);
-            }
-        }
-        let mut gene_parents = BTreeSet::<usize>::new();
-        for transcript_parent in &transcript_parents {
-            if let Some(parents) = annot.row2parents.get(transcript_parent) {
+    {
+        let mut region_bb: BufWriter<Box<Write>> = BufWriter::new(
+            match debug_rpkm_region_bigbed.as_ref().map(String::as_ref) {
+                Some("-") => Box::new(stdout()),
+                Some(f) => Box::new(File::create(format!("{}.bed",f))?),
+                None => Box::new(sink()),
+            });
+        let mut reads_bb: BufWriter<Box<Write>> = BufWriter::new(
+            match debug_mapped_reads_bigbed.as_ref().map(String::as_ref) {
+                Some("-") => Box::new(stdout()),
+                Some(f) => Box::new(File::create(format!("{}.bed",f))?),
+                None => Box::new(sink()),
+            });
+        let mut seen_read = HashSet::<String>::new();
+
+        for pair in pairs {
+            let mut transcript_parents = HashSet::<usize>::new();
+            if let Some(parents) = annot.row2parents.get(&pair.exon1_row) {
                 for parent in parents {
-                    gene_parents.insert(*parent);
+                    transcript_parents.insert(*parent);
                 }
             }
-        }
-        // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
-        for gene_row in &gene_parents {
-            let mapped_reads = &pair.mapped_reads;
-            let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
-            let mut constituitive_reads = HashSet::<String>::new();
-            for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
-                constituitive_reads.insert(read.data().clone());
-            }
-            for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
-                constituitive_reads.insert(read.data().clone());
-            }
-            let total_constituitive_rpkm = if total_reads == 0 || constituitive_bases == 0 { 0f64 } 
-            else {
-                (1e10f64 * constituitive_reads.len() as f64) 
-                    / (total_reads as f64 * constituitive_bases as f64)
-            };
-            
-            let mut cassette_bases = 0u64;
-            let mut cassette_reads = HashSet::<String>::new();
-            let mut intron_bases = 0u64;
-            let mut intron_reads = HashSet::<String>::new();
-            let mut max_exon_rpkm = 0f64;
-            if pair.cassettes.is_empty() {
-                intron_bases += (annot.rows[pair.exon2_row].start-1) - annot.rows[pair.exon1_row].end;
-                for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon1_row].end) {
-                    intron_reads.insert(read.data().clone());
+            if let Some(parents) = annot.row2parents.get(&pair.exon2_row) {
+                for parent in parents {
+                    transcript_parents.insert(*parent);
                 }
             }
-            else {
-                intron_bases += pair.cassettes[0].range.start - annot.rows[pair.exon1_row].end;
-                for read in mapped_reads.find(pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end) {
-                    intron_reads.insert(read.data().clone());
-                }
-                for (i, cassette) in pair.cassettes.iter().enumerate() {
-                    cassette_bases += cassette.range.end-cassette.range.start;
-                    let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
-                    for read in &reads {
-                        cassette_reads.insert(read.data().clone());
+            let mut gene_parents = BTreeSet::<usize>::new();
+            for transcript_parent in &transcript_parents {
+                if let Some(parents) = annot.row2parents.get(transcript_parent) {
+                    for parent in parents {
+                        gene_parents.insert(*parent);
                     }
-                    let exon_rpkm = (1e10f64 * reads.len() as f64) / (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
-                    if max_exon_rpkm < exon_rpkm {
-                        max_exon_rpkm = exon_rpkm;
+                }
+            }
+            // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
+            for gene_row in &gene_parents {
+                let mapped_reads = &pair.mapped_reads;
+                let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
+                let mut constituitive_reads = HashSet::<String>::new();
+                for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
+                    constituitive_reads.insert(read.data().clone());
+                }
+                for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
+                    constituitive_reads.insert(read.data().clone());
+                }
+                let total_constituitive_rpkm = if total_reads == 0 || constituitive_bases == 0 { 0f64 } 
+                else {
+                    (1e10f64 * constituitive_reads.len() as f64) 
+                        / (total_reads as f64 * constituitive_bases as f64)
+                };
+                
+                let mut cassette_reads = HashMap::<String,Vec<Range<u64>>>::new();
+                let mut cassette_features = Vec::<(Range<u64>,f64)>::new();
+                let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
+                let mut intron_features = Vec::<Range<u64>>::new();
+                if pair.cassettes.is_empty() {
+                    let intron_range = annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon1_row].end;
+                    for read in mapped_reads.find(&intron_range) {
+                        let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                        intron_read.push(read.interval().start..read.interval().end);
                     }
-                    if i < pair.cassettes.len()-1 {
-                        intron_bases += pair.cassettes[i+1].range.start - cassette.range.end;
-                        for read in mapped_reads.find(cassette.range.end..pair.cassettes[i+1].range.start) {
-                            intron_reads.insert(read.data().clone());
+                    intron_features.push(intron_range);
+                }
+                else {
+                    let intron_range = pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end;
+                    for read in mapped_reads.find(&intron_range) {
+                        let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                        intron_read.push(read.interval().start..read.interval().end);
+                    }
+                    intron_features.push(intron_range);
+                    
+                    for (i, cassette) in pair.cassettes.iter().enumerate() {
+                        let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
+                        for read in &reads {
+                            let mut cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                            cassette_read.push(read.interval().start..read.interval().end);
+                        }
+                        let exon_rpkm = (1e10f64 * reads.len() as f64) / 
+                                        (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
+                        cassette_features.push((cassette.range.clone(), exon_rpkm));
+                        if i < pair.cassettes.len()-1 {
+                            let intron_range = cassette.range.end..pair.cassettes[i+1].range.start;
+                            for read in mapped_reads.find(&intron_range) {
+                                let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                                intron_read.push(read.interval().start..read.interval().end);
+                            }
+                            intron_features.push(intron_range);
                         }
                     }
+                    
+                    let intron_range = pair.cassettes[pair.cassettes.len()-1].range.start..annot.rows[pair.exon2_row].start;
+                    for read in mapped_reads.find(&intron_range) {
+                            let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                            intron_read.push(read.interval().start..read.interval().end);
+                    }
+                    intron_features.push(intron_range);
                 }
-                intron_bases += (annot.rows[pair.exon2_row].start-1) - pair.cassettes[pair.cassettes.len()-1].range.end;
-                for read in mapped_reads.find(pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end) {
-                    intron_reads.insert(read.data().clone());
+                let cassette_bases = cassette_features.iter().map(|f| f.0.end-f.0.start).sum::<u64>();
+                let intron_bases = intron_features.iter().map(|f| f.end-f.start).sum::<u64>();
+                let max_exon_rpkm = cassette_features.iter().map(|f| f.1).fold(std::f64::NAN, f64::max);
+                let total_cassette_rpkm = (1e10f64 * cassette_reads.len() as f64) / (total_reads as f64 * cassette_bases as f64);
+                let intron_rpkm = (1e10f64 * intron_reads.len() as f64) / (total_reads as f64 * intron_bases as f64);
+                rpkmstats.push(RpkmStats {
+                    gene_row: *gene_row,
+                    intron_rpkm: intron_rpkm,
+                    max_cassette_rpkm: max_exon_rpkm,
+                    total_constituitive_rpkm: total_constituitive_rpkm,
+                    total_cassette_rpkm: total_cassette_rpkm,
+                });
+                
+                // write cassette features to the region bed file
+                let pair_name = get_pair_name(pair, annot);
+                cassette_features.sort_by_key(|f| f.0.start);
+                let cassette_name = format!("{}.cassettes", pair_name);
+                let cassette_color = [255,0,0];
+                if !cassette_features.is_empty() {
+                    let max_exon = if let Some(me) = cassette_features.iter().
+                            max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Less)) 
+                        { me.clone() } 
+                        else { (cassette_features[0].0.start..cassette_features[0].0.start, 0f64) };
+                    
+                    region_bb.write_fmt(format_args!("{}\n", [
+                        annot.rows[pair.exon1_row].seqname.as_str(),
+                        &cassette_features[0].0.start.to_string(),
+                        &cassette_features[cassette_features.len()-1].0.end.to_string(),
+                        &cassette_name,
+                        &0.to_string(),
+                        &annot.rows[pair.exon1_row].strand,
+                        &max_exon.0.start.to_string(),
+                        &max_exon.0.end.to_string(),
+                        &cassette_color.iter().map(|v| v.to_string()).join(","),
+                        &cassette_features.len().to_string(),
+                        &cassette_features.iter().map(|f| (f.0.end-f.0.start).to_string()).join(","),
+                        &cassette_features.iter().map(|f| (f.0.start-cassette_features[0].0.start).to_string()).join(","),
+                    ].join("\t")))?;
+                }
+                // write intron features to the region bed file
+                intron_features.sort_by_key(|f| f.start);
+                let intron_name = format!("{}.introns", pair_name);
+                let intron_color = [0,0,255];
+                region_bb.write_fmt(format_args!("{}\n", [
+                    annot.rows[pair.exon1_row].seqname.as_str(),
+                    &intron_features[0].start.to_string(),
+                    &intron_features[intron_features.len()-1].end.to_string(),
+                    &intron_name,
+                    &0.to_string(),
+                    &annot.rows[pair.exon1_row].strand,
+                    &intron_features[0].start.to_string(),
+                    &intron_features[0].start.to_string(),
+                    &intron_color.iter().map(|v| v.to_string()).join(","),
+                    &intron_features.len().to_string(),
+                    &intron_features.iter().map(|f| (f.end-f.start).to_string()).join(","),
+                    &intron_features.iter().map(|f| (f.start-intron_features[0].start).to_string()).join(","),
+                ].join("\t")))?;
+                
+                // write to the mapped reads bed file
+                for (read_name, ranges) in &mut cassette_reads {
+                    let read_name = format!("{}.c", read_name);
+                    if !seen_read.contains(&read_name) {
+                        seen_read.insert(read_name.clone());
+                        ranges.sort_by_key(|e| e.start);
+                        reads_bb.write_fmt(format_args!("{}\n", [
+                            annot.rows[pair.exon1_row].seqname.as_str(),
+                            &ranges[0].start.to_string(),
+                            &ranges[ranges.len()-1].end.to_string(),
+                            &read_name,
+                            &0.to_string(),
+                            &annot.rows[pair.exon1_row].strand,
+                            &ranges[0].start.to_string(),
+                            &ranges[0].start.to_string(),
+                            &cassette_color.iter().map(|v| v.to_string()).join(","),
+                            &ranges.len().to_string(),
+                            &ranges.iter().map(|r| (r.end-r.start).to_string()).join(","),
+                            &ranges.iter().map(|r| (r.start-ranges[0].start).to_string()).join(","),
+                        ].join(",")))?;
+                            
+                    }
+                }
+                for (read_name, ranges) in &mut intron_reads {
+                    let read_name = format!("{}.i", read_name);
+                    if !seen_read.contains(&read_name) {
+                        seen_read.insert(read_name.clone());
+                        ranges.sort_by_key(|e| e.start);
+                        reads_bb.write_fmt(format_args!("{}\n", [
+                            annot.rows[pair.exon1_row].seqname.as_str(),
+                            &ranges[0].start.to_string(),
+                            &ranges[ranges.len()-1].end.to_string(),
+                            &read_name,
+                            &0.to_string(),
+                            &annot.rows[pair.exon1_row].strand,
+                            &ranges[0].start.to_string(),
+                            &ranges[0].start.to_string(),
+                            &intron_color.iter().map(|v| v.to_string()).join(","),
+                            &ranges.len().to_string(),
+                            &ranges.iter().map(|r| (r.end-r.start).to_string()).join(","),
+                            &ranges.iter().map(|r| (r.start-ranges[0].start).to_string()).join(","),
+                        ].join(",")))?;
+                    }
                 }
             }
-            let total_cassette_rpkm = (1e10f64 * cassette_reads.len() as f64) / (total_reads as f64 * cassette_bases as f64);
-            let intron_rpkm = (1e10f64 * intron_reads.len() as f64) / (total_reads as f64 * intron_bases as f64);
-            rpkmstats.push(RpkmStats {
-                gene_row: *gene_row,
-                intron_rpkm: intron_rpkm,
-                max_cassette_rpkm: max_exon_rpkm,
-                total_constituitive_rpkm: total_constituitive_rpkm,
-                total_cassette_rpkm: total_cassette_rpkm,
-            });
-            break;
         }
     }
+    // convert bed files to bigbed
+    match debug_rpkm_region_bigbed.as_ref().map(String::as_ref) {
+        None | Some("-") => (),
+        Some(f) => bed2bigbed(&format!("{}.bed", f), f, refs, true, true, trackdb)?
+    };
+    match debug_mapped_reads_bigbed.as_ref().map(String::as_ref) {
+        None | Some("-") => (),
+        Some(f) => bed2bigbed(&format!("{}.bed", f), f, refs, true, true, trackdb)?
+    };
     Ok(rpkmstats)
 }
 
@@ -1212,62 +1483,65 @@ fn write_rpkm_stats(outfile: &str, annot: &IndexedAnnotation, rpkmstats: &mut[Rp
     Ok(())
 }
 
+fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String {
+    let mut gene_id = None;
+    'FIND_GENE_ID:
+    for transcript_row in &annot.row2parents[&pair.exon1_row] {
+        for gene_row in &annot.row2parents[transcript_row] {
+            if annot.rows[*gene_row].feature_type == "gene" {
+                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
+                    gene_id = Some(gene_name_attr);
+                    break 'FIND_GENE_ID;
+                } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get("ID") {
+                    gene_id = Some(gene_id_attr);
+                    break 'FIND_GENE_ID;
+                }
+            }
+        }
+        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
+            gene_id = Some(transcript_name_attr);
+            break 'FIND_GENE_ID;
+        } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get("ID") {
+            gene_id = Some(transcript_id_attr);
+            break 'FIND_GENE_ID;
+        }
+    }
+    gene_id = gene_id.or_else(||
+        annot.rows[pair.exon1_row].attributes.get("gene_id").or_else(||
+        annot.rows[pair.exon1_row].attributes.get("transcript_id").or_else(||
+        annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
+        annot.rows[pair.exon1_row].attributes.get("ID")))));
+    // format the feature name    
+    let name = format!("{}{}:{}..{}:{}", 
+        match gene_id {
+            Some(g) => format!("{}:", g),
+            None => "".to_string(),
+        },
+        annot.rows[pair.exon1_row].seqname,
+        annot.rows[pair.exon1_row].start-1,
+        annot.rows[pair.exon2_row].end,
+        annot.rows[pair.exon2_row].strand);
+    name
+}
+
 fn write_exon_bigbed(
     pairs: &[ConstituitivePair], 
     annot: &IndexedAnnotation,
     file: &str, 
-    refs: &LinkedHashMap<String,(u32,u32)>) 
+    refs: &LinkedHashMap<String,(u32,u32)>,
+    trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<()> 
 {
-    // bigbed file is already sorted
-    
     // write the bed file
     let bed_file = format!("{}.bed", file);
     
     {   let mut bw = BufWriter::new(File::create(&bed_file)?);
         for pair in pairs {
             // find the gene ID
-            let mut gene_id = None;
-            'FIND_GENE_ID:
-            for transcript_row in &annot.row2parents[&pair.exon1_row] {
-                for gene_row in &annot.row2parents[transcript_row] {
-                    if annot.rows[*gene_row].feature_type == "gene" {
-                        if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
-                            gene_id = Some(gene_name_attr);
-                            break 'FIND_GENE_ID;
-                        } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get("ID") {
-                            gene_id = Some(gene_id_attr);
-                            break 'FIND_GENE_ID;
-                        }
-                    }
-                }
-                if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
-                    gene_id = Some(transcript_name_attr);
-                    break 'FIND_GENE_ID;
-                } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get("ID") {
-                    gene_id = Some(transcript_id_attr);
-                    break 'FIND_GENE_ID;
-                }
-            }
-            gene_id = gene_id.or_else(||
-                annot.rows[pair.exon1_row].attributes.get("gene_id").or_else(||
-                annot.rows[pair.exon1_row].attributes.get("transcript_id").or_else(||
-                annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
-                annot.rows[pair.exon1_row].attributes.get("ID")))));
-            // format the feature name    
-            let name = format!("{}{}:{}..{}:{}", 
-                match gene_id {
-                    Some(g) => format!("{}:", g),
-                    None => "".to_string(),
-                },
-                annot.rows[pair.exon1_row].seqname,
-                annot.rows[pair.exon1_row].start-1,
-                annot.rows[pair.exon2_row].end,
-                annot.rows[pair.exon2_row].strand);
-                
+            let name = get_pair_name(pair, annot);
             // write the bed record
             let score = 0;
-            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
             let mut block_sizes = Vec::<u64>::new();
             let mut block_starts = Vec::<u64>::new();
             block_sizes.push(annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1);
@@ -1277,47 +1551,26 @@ fn write_exon_bigbed(
             }
             block_sizes.push(annot.rows[pair.exon2_row].end-annot.rows[pair.exon2_row].start+1);
             let line = &[
-                annot.rows[pair.exon1_row].seqname.clone(),
-                (annot.rows[pair.exon1_row].start-1).to_string(),
-                annot.rows[pair.exon2_row].end.to_string(),
-                name,
-                score.to_string(),
-                annot.rows[pair.exon2_row].strand.clone(),
-                if pair.cassettes.is_empty() { (annot.rows[pair.exon1_row].start-1).to_string() } 
+                annot.rows[pair.exon1_row].seqname.as_str(),
+                &(annot.rows[pair.exon1_row].start-1).to_string(),
+                &annot.rows[pair.exon2_row].end.to_string(),
+                &name,
+                &score.to_string(),
+                &annot.rows[pair.exon2_row].strand,
+                &if pair.cassettes.is_empty() { (annot.rows[pair.exon1_row].start-1).to_string() } 
                 else { pair.cassettes[0].range.start.to_string() },
-                if pair.cassettes.is_empty() { (annot.rows[pair.exon1_row].start-1).to_string() } 
+                &if pair.cassettes.is_empty() { (annot.rows[pair.exon1_row].start-1).to_string() } 
                 else { pair.cassettes[pair.cassettes.len()-1].range.end.to_string() },
-                item_rgb.clone(),
-                (pair.cassettes.len()+2).to_string(),
-                block_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-                block_starts.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+                item_rgb,
+                &(pair.cassettes.len()+2).to_string(),
+                &block_sizes.iter().map(|v| v.to_string()).join(","),
+                &block_starts.iter().map(|v| v.to_string()).join(","),
             ].join("\t");
             writeln!(bw, "{}", line)?;
         }
     }
-    
-    // write the genome file
-    let genome_filename = format!("{}.bb.genome", file);
-    {   let mut genome_fh = File::create(&genome_filename)?;
-        for (chr, &(_, length)) in refs {
-            writeln!(genome_fh, "{}\t{}", chr, length)?;
-        }
-    }
-    
-    // call bedToBigBed
-    let bigbed_file = format!("{}.bb", file);
-    let mut command = Command::new("bedToBigBed");
-    command.args(&["-type=bed12", "-tab", "extraIndex=name", &bed_file, &genome_filename, &bigbed_file]);
-    let status = command.spawn()?.wait()?;
-    if !status.success() {
-        return Err(format!(
-            "Exit code {:?} returned from command {:?}", status.code(), command).into());
-    }
-    // remove the bed file
-    std::fs::remove_file(&bed_file)?;
-    // remove the genome file
-    std::fs::remove_file(&genome_filename)?;
-    
+    // bigbed file is already sorted
+    bed2bigbed(&bed_file, &format!("{}.bb",bed_file),refs,false,true,trackdb)?;
     Ok(())
 }
 
@@ -1341,7 +1594,7 @@ fn run() -> Result<()> {
     }
     
     // set up the trackdb writer
-    let trackdb: BufWriter<Box<Write>> = BufWriter::new(
+    let mut trackdb: BufWriter<Box<Write>> = BufWriter::new(
         match options.debug_trackdb.as_ref().map(String::as_ref) {
             Some("-") => Box::new(stdout()),
             Some(f) => Box::new(File::create(f)?),
@@ -1361,48 +1614,89 @@ fn run() -> Result<()> {
     if bamfiles.is_empty() {
         return Err("No bam files were passed in!".into());
     }
+    writeln!("Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
     let refs = get_bam_refs(&bamfiles[0])?;
     
-    let annot = IndexedAnnotation::from_file(&options.annotfile, 
-        options.gene_type.get(0).r()?, 
-        options.transcript_type.get(0).r()?)?;
-    if let Some(debug_annot) = options.debug_annot.clone() {
-        annot.to_file(&debug_annot)?; 
+    let annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
+        writeln!("Reading annotation file {:?}", &annotfile_gff)?;
+        IndexedAnnotation::from_gff(&annotfile_gff, 
+            options.gene_type.get(0).r()?, 
+            options.transcript_type.get(0).r()?)?
+    } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
+        writeln!("Reading annotation file {:?}", &annotfile_gtf)?;
+        IndexedAnnotation::from_gtf(&annotfile_gtf, 
+            options.gene_type.get(0).r()?, 
+            options.transcript_type.get(0).r()?)?
+    } else {
+        return Err("No annotation file was given!".into());
+    };
+    if let Some(debug_annot_gff) = options.debug_annot_gff.clone() {
+        writeln!("Writing annotation file to {:?}", &debug_annotfile_gff)?;
+        annot.to_gff(&debug_annot_gff)?; 
+    }
+    if let Some(debug_annot_gtf) = options.debug_annot_gtf.clone() {
+        writeln!("Writing annotation file to {:?}", &debug_annotfile_gtf)?;
+        annot.to_gtf(&debug_annot_gtf)?; 
     }
     if let Some(debug_annot_bigbed) = options.debug_annot_bigbed.clone() {
-        annot.to_bigbed(&debug_annot_bigbed, &refs, &options.exon_type, &options.cds_type, &options.transcript_type)?; 
+        writeln!("Writing annotation file to {:?}", &debug_annotfile_bigbed)?;
+        annot.to_bigbed(
+            &debug_annot_bigbed, 
+            &refs, 
+            &options.exon_type, 
+            &options.cds_type, 
+            &options.transcript_type,
+            &mut trackdb)?; 
     }
     if let Some(debug_annot_json) = options.debug_annot_json.clone() {
+        writeln!("Writing annotation file to {:?}", &debug_annotfile_json)?;
         annot.to_json(&debug_annot_json)?; 
     }
     
     // get the total bam reads
+    writeln!("Running samtools idxstats to get total bam read counts")?;
     let total_reads = get_bam_total_reads(&bamfiles)?;
+    writeln!("Found {} total reads", total_reads)?;
     
     // find the constituitive exons
+    writeln!("Searching for constituitive exons in the annotation")?;
     let exonpairs = find_constituitive_exons(&annot, &options)?;
     if let Some(debug_exon_bigbed) = options.debug_exon_bigbed.clone() {
-        write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &refs)?;
+        writeln!("Writing constituitive pairs to a bigbed file")?;
+        write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &refs, &mut trackdb)?;
     }
         
+    writeln!("Reannotating cassette regions")?;
     let reannotated_pairs = reannotate_regions(
         &annot,
         &exonpairs, 
         &bamfiles, 
         &bamstrand,
         &refs,
-        &options)?;
+        &options,
+        &mut trackdb)?;
     if let Some(debug_reannot_bigbed) = options.debug_reannot_bigbed.clone() {
-        write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &refs)?;
+        writeln!("Writing reannotation to bigbed")?;
+        write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &refs, &mut trackdb)?;
     }
     
-    let mut rpkmstats = compute_rpkm(&annot, &reannotated_pairs, total_reads)?;
+    writeln!("Computing RPKM stats")?;
+    let mut rpkmstats = compute_rpkm(
+        &annot, 
+        &reannotated_pairs, 
+        total_reads, 
+        &options.debug_rpkm_region_bigbed,
+        &options.debug_mapped_reads_bigbed,
+        &refs,
+        &mut trackdb)?;
     if let Some(debug_rpkmstats_json) = options.debug_rpkmstats_json.clone() {
+        writeln!("Writing RPKM stats to {:?}", &debug_rpkm_stats)?;
         let mut output: BufWriter<Box<Write>> = BufWriter::new(
             if debug_rpkmstats_json == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(debug_rpkmstats_json)?) });
             serde_json::to_writer_pretty(&mut output, &rpkmstats)?;
     }
+    writeln!("Writing RPKM stats to {:?}", &options.outfile)?;
     write_rpkm_stats(&options.outfile, &annot, &mut rpkmstats)?;
     Ok(())
 }
