@@ -48,10 +48,8 @@ use linked_hash_map::LinkedHashMap;
 
 extern crate serde;
 use serde::ser::SerializeStruct;
-
 #[macro_use]
 extern crate serde_derive;
-
 extern crate serde_json;
 
 extern crate itertools;
@@ -1052,9 +1050,11 @@ fn reannotate_regions(
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", true)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", true)?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", false)?;
         write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", true)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", true)?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", false)?;
         write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", false)?;
     }
     Ok(reannotated)
