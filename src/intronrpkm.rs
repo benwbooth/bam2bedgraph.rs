@@ -1,4 +1,4 @@
-#![feature(ordering_chaining,plugin)]
+#![feature(plugin)]
 #![plugin(indoc)]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
 use std::str;
@@ -56,6 +56,12 @@ extern crate serde_json;
 
 extern crate itertools;
 use itertools::Itertools;
+
+extern crate sprs;
+use sprs::CsVec;
+
+extern crate string_cache;
+use string_cache::DefaultAtom as Atom;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
@@ -119,17 +125,17 @@ struct Options {
 }
 
 #[derive(Default, Serialize, Deserialize)]
-pub struct Record {
+struct Record {
     row: usize,
-    seqname: String,
-    source: String,
-    feature_type: String,
+    seqname: Atom,
+    source: Atom,
+    feature_type: Atom,
     start: u64,
     end: u64,
-    score: String,
-    strand: String,
-    frame: String,
-    attributes: LinkedHashMap<String, String>,
+    score: Atom,
+    strand: Atom,
+    frame: Atom,
+    attributes: LinkedHashMap<Atom, Atom>,
 }
 
 impl PartialEq for Record {
@@ -170,25 +176,25 @@ impl Record {
         let fields: Vec<_> = line.split('\t').collect();
         Ok(Record {
             row: row,
-            seqname: String::from(*fields.get(0).unwrap_or(&"")),
-            source: String::from(*fields.get(1).unwrap_or(&"")),
-            feature_type: String::from(*fields.get(2).unwrap_or(&"")),
+            seqname: Atom::from(*fields.get(0).unwrap_or(&"")),
+            source: Atom::from(*fields.get(1).unwrap_or(&"")),
+            feature_type: Atom::from(*fields.get(2).unwrap_or(&"")),
             start: fields.get(3).unwrap_or(&"0").parse::<u64>()?,
             end: fields.get(4).unwrap_or(&"0").parse::<u64>()?,
-            score: String::from(*fields.get(5).unwrap_or(&"")),
-            strand: String::from(*fields.get(6).unwrap_or(&"")),
-            frame: String::from(*fields.get(7).unwrap_or(&"")),
+            score: Atom::from(*fields.get(5).unwrap_or(&"")),
+            strand: Atom::from(*fields.get(6).unwrap_or(&"")),
+            frame: Atom::from(*fields.get(7).unwrap_or(&"")),
             attributes: if filetype == "gff" {
                 fields.get(8).unwrap_or(&"").split(';').map(|a| {
                     let kv: Vec<_> = a.splitn(2, '=').collect();
-                    let key = String::from(percent_decode(kv[0].as_bytes()).decode_utf8().unwrap());
-                    let value = String::from(percent_decode(kv.get(1).unwrap_or(&"").as_bytes()).decode_utf8().unwrap());
+                    let key = Atom::from(percent_decode(kv[0].as_bytes()).decode_utf8().unwrap());
+                    let value = Atom::from(percent_decode(kv.get(1).unwrap_or(&"").as_bytes()).decode_utf8().unwrap());
                     (key, value)
                 }).collect()
             } else if filetype == "gtf" {
                 GTF_ATTR.captures_iter(fields.get(8).unwrap_or(&"")).map(|caps| {
-                    (caps["key"].to_string(), 
-                     caps.name("qval").unwrap_or_else(|| caps.name("val").unwrap()).as_str().to_string())
+                    (Atom::from(caps["key"].to_string()), 
+                     Atom::from(caps.name("qval").unwrap_or_else(|| caps.name("val").unwrap()).as_str().to_string()))
                 }).collect()
             } else {
                 return Err(format!("Don't know how to read filetype {}", filetype).into());
@@ -232,10 +238,10 @@ impl Record {
 
 struct IndexedAnnotation {
     rows: Vec<Record>,
-    id2row: HashMap<String, usize>,
+    id2row: HashMap<Atom, usize>,
     row2parents: HashMap<usize, Vec<usize>>,
     row2children: HashMap<usize, Vec<usize>>,
-    tree: HashMap<String, IntervalTree<u64, usize>>,
+    tree: HashMap<Atom, IntervalTree<u64, usize>>,
 }
 impl serde::Serialize for IndexedAnnotation
 {
@@ -247,7 +253,7 @@ impl serde::Serialize for IndexedAnnotation
         ia.serialize_field("id2row", &self.id2row)?;
         ia.serialize_field("row2parents", &self.row2parents)?;
         ia.serialize_field("row2children", &self.row2children)?;
-        let mut tree = HashMap::<String, Vec<((u64,u64),usize)>>::new();
+        let mut tree = HashMap::<Atom, Vec<((u64,u64),usize)>>::new();
         for (chr,interval_tree) in &self.tree {
             let mut nodes = Vec::<((u64, u64),usize)>::new();
             for node in interval_tree.find(0..std::u64::MAX) {
@@ -267,13 +273,15 @@ impl IndexedAnnotation {
         IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type)
     }
     fn from_file(annotfile: &str, filetype: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
-        let mut id2row = HashMap::<String, usize>::new();
+        let mut id2row = HashMap::<Atom, usize>::new();
         let mut rows = Vec::<Record>::new();
         let f = File::open(&annotfile)?;
         let file = BufReader::new(&f);
+        let id_atom = Atom::from("ID");
+        let name_atom = Atom::from("Name");
         for (row, line) in file.lines().enumerate() {
             if let Ok(record) = Record::from_row(row, &line?, filetype) {
-                if let Some(id) = record.attributes.get("ID") {
+                if let Some(id) = record.attributes.get(&id_atom) {
                     id2row.insert(id.clone(), row);
                 }
                 rows.push(record);
@@ -284,6 +292,10 @@ impl IndexedAnnotation {
         let mut row2children = HashMap::<usize, BTreeSet<usize>>::new();
         // make fake rows for GTF gene_id and transcript_id attributes
         let mut fake_rows = Vec::<Record>::new();
+        let transcript_id_atom = Atom::from("transcript_id");
+        let transcript_name_atom = Atom::from("transcript_name");
+        let gene_id_atom = Atom::from("gene_id");
+        let gene_name_atom = Atom::from("gene_name");
         match filetype {
             "gtf" => {
                 let mut firstrow = HashMap::<&Record, usize>::new();
@@ -291,14 +303,14 @@ impl IndexedAnnotation {
                     // in GTF, if two rows both have identical fields (except attributes), they
                     // are the same feature.
                     let row = *firstrow.entry(record).or_insert(row);
-                    if let Some(transcript_id) = record.attributes.get("transcript_id") {
+                    if let Some(transcript_id) = record.attributes.get(&transcript_id_atom) {
                         let mut transcript_record = Record::new();
-                        transcript_record.feature_type = transcript_type.to_string();
+                        transcript_record.feature_type = Atom::from(transcript_type);
                         transcript_record.attributes
-                            .insert("ID".to_string(), transcript_id.clone());
-                        if let Some(transcript_name) = record.attributes.get("transcript_name") {
+                            .insert(id_atom.clone(), transcript_id.clone());
+                        if let Some(transcript_name) = record.attributes.get(&transcript_name_atom) {
                             transcript_record.attributes
-                                .insert("Name".to_string(), transcript_name.clone());
+                                .insert(name_atom.clone(), transcript_name.clone());
                         }
                         let transcriptrow = rows.len() + fake_rows.len();
                         id2row.insert(transcript_id.clone(), transcriptrow);
@@ -308,13 +320,13 @@ impl IndexedAnnotation {
                             .insert(row);
                         fake_rows.push(transcript_record);
 
-                        if let Some(gene_id) = record.attributes.get("gene_id") {
+                        if let Some(gene_id) = record.attributes.get(&gene_id_atom) {
                             let mut gene_record = Record::new();
-                            gene_record.feature_type = gene_type.to_string();
-                            gene_record.attributes.insert("ID".to_string(), gene_id.clone());
-                            if let Some(gene_name) = record.attributes.get("gene_name") {
+                            gene_record.feature_type = Atom::from(gene_type);
+                            gene_record.attributes.insert(id_atom.clone(), gene_id.clone());
+                            if let Some(gene_name) = record.attributes.get(&gene_name_atom) {
                                 gene_record.attributes
-                                    .insert("Name".to_string(), gene_name.clone());
+                                    .insert(name_atom.clone(), gene_name.clone());
                             }
                             let generow = rows.len() + fake_rows.len();
                             id2row.insert(gene_id.clone(), generow);
@@ -330,10 +342,11 @@ impl IndexedAnnotation {
                 }
             }
             "gff" => {
+                let parent_atom = Atom::from("Parent");
                 for (row, record) in rows.iter().enumerate() {
-                    if let Some(parent) = record.attributes.get("Parent") {
+                    if let Some(parent) = record.attributes.get(&parent_atom) {
                         for p in parent.split(',') {
-                            if let Some(parentrow) = id2row.get(p) {
+                            if let Some(parentrow) = id2row.get(&Atom::from(p)) {
                                 row2parents.entry(row)
                                     .or_insert_with(BTreeSet::new)
                                     .insert(*parentrow);
@@ -374,11 +387,11 @@ impl IndexedAnnotation {
                     addchildren.append(&mut morechildren);
                 }
                 // aggregate the child nodes to get the missing information
-                let mut seqname = HashMap::<&str, u64>::new();
-                let mut source = HashMap::<&str, u64>::new();
+                let mut seqname = HashMap::<Atom, u64>::new();
+                let mut source = HashMap::<Atom, u64>::new();
                 let mut start: Option<u64> = Option::None;
                 let mut end: Option<u64> = Option::None;
-                let mut strand = HashMap::<&str, u64>::new();
+                let mut strand = HashMap::<Atom, u64>::new();
                 for c in &children {
                     let child = &rows[*c];
                     if start.is_none() || child.start < start.r()? {
@@ -387,17 +400,17 @@ impl IndexedAnnotation {
                     if end.is_none() || child.end > end.r()? {
                         end = Some(child.end);
                     }
-                    *seqname.entry(&child.seqname).or_insert(0u64) += 1;
-                    *source.entry(&child.source).or_insert(0u64) += 1;
-                    *strand.entry(&child.strand).or_insert(0u64) += 1;
+                    *seqname.entry(child.seqname.clone()).or_insert(0u64) += 1;
+                    *source.entry(child.source.clone()).or_insert(0u64) += 1;
+                    *strand.entry(child.strand.clone()).or_insert(0u64) += 1;
                 }
                 // enqueue the missing information
                 let mut update = Record::new();
                 if let Some((seqname, _)) = seqname.iter().max_by(|a, b| a.1.cmp(b.1)) {
-                    update.seqname = String::from(*seqname);
+                    update.seqname = seqname.clone();
                 }
                 if let Some((source, _)) = source.iter().max_by(|a, b| a.1.cmp(b.1)) {
-                    update.source = String::from(*source);
+                    update.source = source.clone();
                 }
                 if let Some(start) = start {
                     update.start = start;
@@ -406,7 +419,7 @@ impl IndexedAnnotation {
                     update.end = end;
                 }
                 if let Some((strand, _)) = strand.iter().max_by(|a, b| a.1.cmp(b.1)) {
-                    update.strand = String::from(*strand);
+                    update.strand = strand.clone();
                 }
                 updates.push((row, update));
             }
@@ -415,11 +428,11 @@ impl IndexedAnnotation {
         for u in &mut updates {
             let update = &mut u.1;
             let mut record = &mut rows[u.0];
-            record.seqname = update.seqname.to_string();
-            record.source = update.source.to_string();
+            record.seqname = update.seqname.clone();
+            record.source = update.source.clone();
             record.start = update.start;
             record.end = update.end;
-            record.strand = update.strand.to_string();
+            record.strand = update.strand.clone();
         }
         // sort row2parents by coordinates
         let mut row2parents_update = HashMap::<usize, Vec<usize>>::new();
@@ -448,7 +461,7 @@ impl IndexedAnnotation {
             up.append(&mut vec);
         }
         // build the interval tree
-        let mut tree = HashMap::<String, IntervalTree<u64, usize>>::new();
+        let mut tree = HashMap::<Atom, IntervalTree<u64, usize>>::new();
         for (row, record) in rows.iter().enumerate() {
             let mut t = tree.entry(record.seqname.clone()).or_insert_with(IntervalTree::new);
             t.insert(Interval::new((record.start - 1)..(record.end))?, row);
@@ -467,15 +480,18 @@ impl IndexedAnnotation {
             if filename == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(filename)?) });
             
+        let id_atom = Atom::from("ID");
+        let gene_id_atom = Atom::from("gene_id");
+        let transcript_id_atom = Atom::from("transcript_id");
         for (row, record) in self.rows.iter().enumerate() {
             if let Some(transcript_rows) = self.row2parents.get(&row) {
                 for transcript_row in transcript_rows {
                     let transcript = &self.rows[*transcript_row];
-                    if let Some(transcript_id) = transcript.attributes.get("ID") {
+                    if let Some(transcript_id) = transcript.attributes.get(&id_atom) {
                         if let Some(gene_rows) = self.row2parents.get(transcript_row) {
                             for gene_row in gene_rows {
                                 let gene = &self.rows[*gene_row];
-                                if let Some(gene_id) = gene.attributes.get("ID") {
+                                if let Some(gene_id) = gene.attributes.get(&id_atom) {
                                     let mut rec = Record {
                                         row: row,
                                         seqname: record.seqname.clone(),
@@ -488,8 +504,8 @@ impl IndexedAnnotation {
                                         frame: record.frame.clone(),
                                         attributes: LinkedHashMap::new(),
                                     };
-                                    rec.attributes.insert("gene_id".to_string(), gene_id.clone());
-                                    rec.attributes.insert("transcript_id".to_string(), transcript_id.clone());
+                                    rec.attributes.insert(gene_id_atom.clone(), gene_id.clone());
+                                    rec.attributes.insert(transcript_id_atom.clone(), transcript_id.clone());
                                     for (k,v) in &record.attributes {
                                         if k != "gene_id" && k != "transcript_id" {
                                             rec.attributes.insert(k.clone(), v.clone());
@@ -511,6 +527,7 @@ impl IndexedAnnotation {
             if filename == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(filename)?) });
             
+        let id_atom = Atom::from("ID");
         for (row, record) in self.rows.iter().enumerate() {
             let mut rec = Record {
                 row: row,
@@ -524,18 +541,18 @@ impl IndexedAnnotation {
                 frame: record.frame.clone(),
                 attributes: LinkedHashMap::new(),
             };
-            let mut parents = Vec::<String>::new();
+            let mut parents = Vec::<Atom>::new();
             if let Some(parent_rows) = self.row2parents.get(&row) {
                 for parent_row in parent_rows {
                     let parent = &self.rows[*parent_row];
-                    if let Some(parent_id) = parent.attributes.get("ID") {
+                    if let Some(parent_id) = parent.attributes.get(&id_atom) {
                         parents.push(parent_id.clone());
                     }
                 }
             }
             for (k,v) in &record.attributes {
                 if k == "Parent" {
-                    rec.attributes.insert(k.clone(), parents.join(","));
+                    rec.attributes.insert(k.clone(), Atom::from(parents.iter().map(|s| s.as_ref()).join(",")));
                 }
                 else {
                     rec.attributes.insert(k.clone(), v.clone());
@@ -562,13 +579,15 @@ impl IndexedAnnotation {
         transcript_types: &[String])
         -> Result<()>
     {
-        let exon_types = exon_types.iter().cloned().collect::<HashSet<String>>();
-        let mut cds_types = cds_types.iter().cloned().collect::<HashSet<String>>();
-        if cds_types.is_empty() { cds_types.insert("CDS".to_string()); }
-        let transcript_types = transcript_types.iter().cloned().collect::<HashSet<String>>();
+        let exon_types = exon_types.iter().map(|t| Atom::from(t.as_ref())).collect::<HashSet<Atom>>();
+        let mut cds_types = cds_types.iter().map(|t| Atom::from(t.as_ref())).collect::<HashSet<Atom>>();
+        if cds_types.is_empty() { cds_types.insert(Atom::from("CDS")); }
+        let transcript_types = transcript_types.iter().map(|t| Atom::from(t.as_ref())).collect::<HashSet<Atom>>();
         let mut seen_transcript = HashSet::<usize>::new();
-        let mut transcript_names = HashSet::<String>::new();
+        let mut transcript_names = HashSet::<Atom>::new();
         
+        let id_atom = Atom::from("ID");
+        let name_atom = Atom::from("Name");
         let bed_file = format!("{}.bed", file);
         {   let mut bw = BufWriter::new(File::create(&bed_file)?);
             let mut chrs = self.tree.keys().collect::<Vec<_>>();
@@ -582,19 +601,19 @@ impl IndexedAnnotation {
                             seen_transcript.insert(*transcript_row);
                             
                             // choose a unique transcript name
-                            let transcript_name = transcript.attributes.get("ID").or_else(||
-                                transcript.attributes.get("Name"));
+                            let transcript_name = transcript.attributes.get(&id_atom).or_else(||
+                                transcript.attributes.get(&name_atom));
                             let mut transcript_name = match transcript_name {
-                                Some(t) => t.to_string(),
-                                None => format!("{}:{}..{}:{}", 
-                                    transcript.seqname, transcript.start-1, transcript.end, transcript.strand),
+                                Some(t) => t.clone(),
+                                None => Atom::from(format!("{}:{}..{}:{}", 
+                                    transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
                             };
                             while transcript_names.contains(&transcript_name) {
                                 lazy_static! {
                                     static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
                                 }
-                                transcript_name = TRANSCRIPT_RENAME.replace(&transcript_name, |caps: &Captures| {
-                                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}).to_string();
+                                transcript_name = Atom::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
+                                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
                             }
                             transcript_names.insert(transcript_name.clone());
                             
@@ -622,7 +641,7 @@ impl IndexedAnnotation {
                             let start = self.rows[exons[0]].start-1;
                             let end = self.rows[exons[exons.len()-1]].end;
                             let line = &[
-                                transcript.seqname.as_str(),
+                                transcript.seqname.as_ref(),
                                 &start.to_string(),
                                 &end.to_string(),
                                 &transcript_name,
@@ -646,7 +665,7 @@ impl IndexedAnnotation {
     
     fn to_bigbed(&self, 
         file: &str, 
-        refs: &LinkedHashMap<String,(u32,u32)>,
+        refs: &LinkedHashMap<Atom,(u32,u32)>,
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String],
@@ -744,9 +763,9 @@ impl serde::Serialize for ConstituitivePair
 fn find_constituitive_exons(annot: &IndexedAnnotation,
                             options: &Options)
                             -> Result<Vec<ConstituitivePair>> {
-    let gene_types: HashSet<_> = options.gene_type.iter().collect();
-    let transcript_types: HashSet<_> = options.transcript_type.iter().collect();
-    let exon_types: HashSet<_> = options.exon_type.iter().collect();
+    let gene_types: HashSet<_> = options.gene_type.iter().map(|t| Atom::from(t.as_ref())).collect();
+    let transcript_types: HashSet<_> = options.transcript_type.iter().map(|t| Atom::from(t.as_ref())).collect();
+    let exon_types: HashSet<_> = options.exon_type.iter().map(|t| Atom::from(t.as_ref())).collect();
     
     // set default feature types
     let mut exonpairs = Vec::<ConstituitivePair>::new();
@@ -847,7 +866,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
 fn bed2bigbed(
     bed_file: &str, 
     bigbed_file: &str, 
-    refs: &LinkedHashMap<String,(u32,u32)>, 
+    refs: &LinkedHashMap<Atom,(u32,u32)>, 
     sort_bed: bool,
     remove_bed: bool,
     trackdb: &mut BufWriter<Box<Write>>) 
@@ -911,8 +930,8 @@ fn bed2bigbed(
     Ok(())
 }
 
-fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<String,(u32,u32)>> {
-    let mut refs = LinkedHashMap::<String,(u32,u32)>::new();
+fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<Atom,(u32,u32)>> {
+    let mut refs = LinkedHashMap::<Atom,(u32,u32)>::new();
     let bam = IndexedReader::from_path(bamfile)?;
     let header = bam.header();
     let target_names = header.target_names();
@@ -920,7 +939,7 @@ fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<String,(u32,u32)>> {
         let tid = header.tid(target_name).r()?;
         let target_len = header.target_len(tid).r()?;
         let target_name = std::str::from_utf8(target_name)?;
-        refs.insert(target_name.to_string(), (tid, target_len));
+        refs.insert(Atom::from(target_name), (tid, target_len));
     }
     Ok(refs)
 }
@@ -930,24 +949,28 @@ fn reannotate_regions(
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
-    refs: &LinkedHashMap<String,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,(u32,u32)>,
     options: &Options,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<ConstituitivePair>>
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
     // bigwig histograms
-    let mut start_plus_bw_histo = HashMap::<String,Vec<u32>>::new();
-    let mut start_minus_bw_histo = HashMap::<String,Vec<u32>>::new();
-    let mut end_plus_bw_histo = HashMap::<String,Vec<u32>>::new();
-    let mut end_minus_bw_histo = HashMap::<String,Vec<u32>>::new();
+    let mut plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut start_plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut start_minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut end_plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut end_minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
     // allocate the bigwig histograms
     for (chr, &(_, length)) in refs {
         if options.debug_bigwig.is_some() {
-            start_plus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
-            start_minus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
-            end_plus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
-            end_minus_bw_histo.insert(chr.to_string(), vec![0u32; length as usize]);
+            plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            start_plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            start_minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            end_plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            end_minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
         }
     }
     // store the refseq names and sizes
@@ -955,18 +978,24 @@ fn reannotate_regions(
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let mut start_histo = vec![0u32; (exon2.end-exon1.start+1) as usize];
-        let mut end_histo = vec![0u32; (exon2.end-exon1.start+1) as usize];
+        let reflength = refs[&exon1.seqname].1;
+        let mut histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
+        let mut start_histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
+        let mut end_histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
         let mut mapped_reads = IntervalTree::<u64, String>::new();
         for (b, bamfile) in bamfiles.iter().enumerate() {
             let read1strand = bamstrand[b];
             let mut bam = IndexedReader::from_path(bamfile)?;
             let chr = &annot.rows[pair.exon1_row].seqname;
-            if let Some(tid) = bam.header.tid(&chr.clone().into_bytes()) {
+            if let Some(ref_) = refs.get(chr) {
+                let tid = ref_.0;
                 let start = &annot.rows[pair.exon1_row].start-1;
                 let end = &annot.rows[pair.exon2_row].end;
                 let strand = &annot.rows[pair.exon1_row].strand;
                 let strand_is_plus = strand == "+";
+                let mut bw_histogram = 
+                    if strand_is_plus { plus_bw_histo.get_mut(chr).r()? } 
+                    else { minus_bw_histo.get_mut(chr).r()? };
                 let mut start_bw_histogram = 
                     if strand_is_plus { start_plus_bw_histo.get_mut(chr).r()? } 
                     else { start_minus_bw_histo.get_mut(chr).r()? };
@@ -993,8 +1022,11 @@ fn reannotate_regions(
                             introns.push((exon.1, exons[i+1].0));
                         }
                     }
+                    // write the internal reads histogram
+                    
+                    // write the start/stop histograms
                     let overlaps_constituitives = if options.splice_must_match {
-                            introns.iter().any(|intron| intron.0 == exon1.start-1)
+                            introns.iter().any(|intron| intron.0 == exon1.start-1 || intron.1 == exon2.end)
                         }
                         else {
                             exons.iter().any(|exon| 
@@ -1015,107 +1047,27 @@ fn reannotate_regions(
                 }
             }
         }
-        if options.use_annotated_cassettes {
-            // merge cassettes together in case any are overlapping
-            let mut sorted_cassettes = pair.cassettes.clone();
-            sorted_cassettes.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-            let mut exons = Vec::<Range<u64>>::new();
-            for higher in &sorted_cassettes {
-                if exons.is_empty() {
-                    exons.push(higher.range.clone());
-                }
-                else {
-                    let lower_start = exons[exons.len()-1].start;
-                    let lower_end = exons[exons.len()-1].end;
-                    if higher.range.start <= lower_end {
-                        let upper_bound = std::cmp::max(lower_end, higher.range.end);
-                        let exons_len = exons.len()-1;
-                        exons[exons_len] = lower_start..upper_bound;
-                    }
-                    else {
-                        exons.push(higher.range.clone());
-                    }
-                }
-            }
-            // find max peak for each exon start/stop
-            let mut reannotated_cassettes = Vec::<Cassette>::new();
-            for (i, exon) in exons.iter().enumerate() {
-                // find the start/stop with the max histogram value
-                let start_range_start = if i == 0 { 0usize } else { exons[i-1].end as usize };
-                let start_range = start_range_start..exon.end as usize;
-                let startidx = start_histo[start_range].iter().enumerate().max_by_key(|&(_, v)| v);
-                let start = match startidx {
-                    Some((s, _)) => s as u64 + exon1.start,
-                    None => exon.start,
-                };
-                let end_range = if i < exons.len()-1 { exon.start as usize..exons[i+1].start as usize } 
-                                else { exon.start as usize..end_histo.len() };
-                let endidx = end_histo[end_range].iter().enumerate().max_by_key(|&(_, v)| v);
-                let end = match endidx {
-                    Some((e, _)) => e as u64 + exon1.start,
-                    None => exon.end,
-                };
-                // add the reannotated cassette
-                reannotated_cassettes.push(Cassette {range: start..end, cassette_row: None});
-            }
-            let reannotated_pair = ConstituitivePair {
-                exon1_row: pair.exon1_row,
-                exon2_row: pair.exon2_row,
-                cassettes: pair.cassettes.clone(),
-                mapped_reads: mapped_reads,
-            };
-            reannotated.push(reannotated_pair);
-        }
-        else {
-          return Err("De-novo transcript reannotation is not yet supported!".into());
-        }
+        // TODO: de novo cassette annotation code goes here:
     }
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        
-        trackdb.write_fmt(format_args!(indoc!(r##"
-        
-        track debug_bigwig_+
-        shortLabel debug_bigwig_+
-        longLabel debug_bigwig_+
-        visibility hide
-        type bigWig
-        container multiWig
-        aggregate none
-        maxHeightPixels: 100:50:8
-        viewLimits 0:50
-        priority 1
-        "##)))?;
-        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+")?;
-        write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+")?;
-    
-        trackdb.write_fmt(format_args!(indoc!(r##"
-        
-        track debug_bigwig_-
-        shortLabel debug_bigwig_-
-        longLabel debug_bigwig_-
-        visibility hide
-        type bigWig
-        container multiWig
-        aggregate none
-        maxHeightPixels: 100:50:8
-        viewLimits -50:0
-        priority 1
-        "##)))?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-")?;
-        write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-")?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", true)?;
+        write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", false)?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", true)?;
+        write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", false)?;
     }
     Ok(reannotated)
 }
 
 fn write_bigwig(
     file: &str, 
-    histogram: &HashMap<String,Vec<u32>>, 
-    refs: &LinkedHashMap<String,(u32,u32)>,
+    histogram: &HashMap<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>, 
+    refs: &LinkedHashMap<Atom,(u32,u32)>,
     strand: &str,
     trackdb: &mut BufWriter<Box<Write>>,
-    parent: &str) 
+    parent: &str,
+    write_parent: bool) 
     -> Result<()> 
 {
     // write the bedgraph file
@@ -1130,12 +1082,10 @@ fn write_bigwig(
             let histo = &histogram[chr];
             let ref_length = refs[chr.into()].1 as usize;
             while start < ref_length {
-                while (if end < histo.len() { histo[end] } else { 0 }) ==
-                      (if start < histo.len() { histo[start] } else { 0 }) &&
-                      end < ref_length {
+                while histo[end] == histo[start] && end < ref_length {
                     end += 1
                 }
-                if (if start < histo.len() { histo[start] } else { 0 }) > 0 {
+                if histo[start] > 0 {
                     if strand == "-" {
                         writeln!(bw, "{}\t{}\t{}\t{}\n",
                                  chr, start, end, -(histo[start] as i64))?;
@@ -1179,6 +1129,22 @@ fn write_bigwig(
     let url = utf8_percent_encode(&bigwig_file, PATH_ENCODE_SET);
     let track_name = Path::new(&bigwig_file).file_stem().r()?.to_str().r()?;
     // write to the trackDb.txt file
+    if write_parent {
+        let viewlimits = if strand == "-" { "-50:0" } else { "0:50" };
+        trackdb.write_fmt(format_args!(indoc!(r##"
+
+            track {}
+            shortLabel {}
+            longLabel {}
+            visibility hide
+            type bigWig
+            container multiWig
+            aggregate none
+            maxHeightPixels: 100:50:8
+            viewLimits {}
+            priority 1
+            "##), parent, parent, parent, viewlimits))?;
+    }
     trackdb.write_fmt(format_args!(r##"
     track {}
     shortLabel {}
@@ -1229,7 +1195,7 @@ fn compute_rpkm(
     total_reads: u64,
     debug_rpkm_region_bigbed: &Option<String>,
     debug_mapped_reads_bigbed: &Option<String>,
-    refs: &LinkedHashMap<String,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,(u32,u32)>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<RpkmStats>> 
 {
@@ -1357,7 +1323,7 @@ fn compute_rpkm(
                         else { (cassette_features[0].0.start..cassette_features[0].0.start, 0f64) };
                     
                     region_bb.write_fmt(format_args!("{}\n", [
-                        annot.rows[pair.exon1_row].seqname.as_str(),
+                        annot.rows[pair.exon1_row].seqname.as_ref(),
                         &cassette_features[0].0.start.to_string(),
                         &cassette_features[cassette_features.len()-1].0.end.to_string(),
                         &cassette_name,
@@ -1376,7 +1342,7 @@ fn compute_rpkm(
                 let intron_name = format!("{}.introns", pair_name);
                 let intron_color = [0,0,255];
                 region_bb.write_fmt(format_args!("{}\n", [
-                    annot.rows[pair.exon1_row].seqname.as_str(),
+                    annot.rows[pair.exon1_row].seqname.as_ref(),
                     &intron_features[0].start.to_string(),
                     &intron_features[intron_features.len()-1].end.to_string(),
                     &intron_name,
@@ -1397,7 +1363,7 @@ fn compute_rpkm(
                         seen_read.insert(read_name.clone());
                         ranges.sort_by_key(|e| e.start);
                         reads_bb.write_fmt(format_args!("{}\n", [
-                            annot.rows[pair.exon1_row].seqname.as_str(),
+                            annot.rows[pair.exon1_row].seqname.as_ref(),
                             &ranges[0].start.to_string(),
                             &ranges[ranges.len()-1].end.to_string(),
                             &read_name,
@@ -1419,7 +1385,7 @@ fn compute_rpkm(
                         seen_read.insert(read_name.clone());
                         ranges.sort_by_key(|e| e.start);
                         reads_bb.write_fmt(format_args!("{}\n", [
-                            annot.rows[pair.exon1_row].seqname.as_str(),
+                            annot.rows[pair.exon1_row].seqname.as_ref(),
                             &ranges[0].start.to_string(),
                             &ranges[ranges.len()-1].end.to_string(),
                             &read_name,
@@ -1485,32 +1451,36 @@ fn write_rpkm_stats(outfile: &str, annot: &IndexedAnnotation, rpkmstats: &mut[Rp
 
 fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String {
     let mut gene_id = None;
+    let id_atom = Atom::from("ID");
+    let name_atom = Atom::from("Name");
+    let gene_id_atom = Atom::from("gene_id");
+    let transcript_id_atom = Atom::from("transcript_id");
     'FIND_GENE_ID:
     for transcript_row in &annot.row2parents[&pair.exon1_row] {
         for gene_row in &annot.row2parents[transcript_row] {
-            if annot.rows[*gene_row].feature_type == "gene" {
-                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
+            if annot.rows[*gene_row].feature_type == *"gene" {
+                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get(&name_atom) {
                     gene_id = Some(gene_name_attr);
                     break 'FIND_GENE_ID;
-                } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get("ID") {
+                } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get(&id_atom) {
                     gene_id = Some(gene_id_attr);
                     break 'FIND_GENE_ID;
                 }
             }
         }
-        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
+        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get(&name_atom) {
             gene_id = Some(transcript_name_attr);
             break 'FIND_GENE_ID;
-        } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get("ID") {
+        } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get(&id_atom) {
             gene_id = Some(transcript_id_attr);
             break 'FIND_GENE_ID;
         }
     }
     gene_id = gene_id.or_else(||
-        annot.rows[pair.exon1_row].attributes.get("gene_id").or_else(||
-        annot.rows[pair.exon1_row].attributes.get("transcript_id").or_else(||
-        annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
-        annot.rows[pair.exon1_row].attributes.get("ID")))));
+        annot.rows[pair.exon1_row].attributes.get(&gene_id_atom).or_else(||
+        annot.rows[pair.exon1_row].attributes.get(&transcript_id_atom).or_else(||
+        annot.rows[pair.exon1_row].attributes.get(&name_atom).or_else(|| 
+        annot.rows[pair.exon1_row].attributes.get(&id_atom)))));
     // format the feature name    
     let name = format!("{}{}:{}..{}:{}", 
         match gene_id {
@@ -1528,7 +1498,7 @@ fn write_exon_bigbed(
     pairs: &[ConstituitivePair], 
     annot: &IndexedAnnotation,
     file: &str, 
-    refs: &LinkedHashMap<String,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,(u32,u32)>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<()> 
 {
@@ -1551,7 +1521,7 @@ fn write_exon_bigbed(
             }
             block_sizes.push(annot.rows[pair.exon2_row].end-annot.rows[pair.exon2_row].start+1);
             let line = &[
-                annot.rows[pair.exon1_row].seqname.as_str(),
+                annot.rows[pair.exon1_row].seqname.as_ref(),
                 &(annot.rows[pair.exon1_row].start-1).to_string(),
                 &annot.rows[pair.exon2_row].end.to_string(),
                 &name,
@@ -1614,16 +1584,16 @@ fn run() -> Result<()> {
     if bamfiles.is_empty() {
         return Err("No bam files were passed in!".into());
     }
-    writeln!("Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
+    writeln!(stderr(), "Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
     let refs = get_bam_refs(&bamfiles[0])?;
     
     let annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
-        writeln!("Reading annotation file {:?}", &annotfile_gff)?;
+        writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
         IndexedAnnotation::from_gff(&annotfile_gff, 
             options.gene_type.get(0).r()?, 
             options.transcript_type.get(0).r()?)?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
-        writeln!("Reading annotation file {:?}", &annotfile_gtf)?;
+        writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
             options.transcript_type.get(0).r()?)?
@@ -1631,15 +1601,15 @@ fn run() -> Result<()> {
         return Err("No annotation file was given!".into());
     };
     if let Some(debug_annot_gff) = options.debug_annot_gff.clone() {
-        writeln!("Writing annotation file to {:?}", &debug_annotfile_gff)?;
+        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gff)?;
         annot.to_gff(&debug_annot_gff)?; 
     }
     if let Some(debug_annot_gtf) = options.debug_annot_gtf.clone() {
-        writeln!("Writing annotation file to {:?}", &debug_annotfile_gtf)?;
+        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gtf)?;
         annot.to_gtf(&debug_annot_gtf)?; 
     }
     if let Some(debug_annot_bigbed) = options.debug_annot_bigbed.clone() {
-        writeln!("Writing annotation file to {:?}", &debug_annotfile_bigbed)?;
+        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_bigbed)?;
         annot.to_bigbed(
             &debug_annot_bigbed, 
             &refs, 
@@ -1649,24 +1619,24 @@ fn run() -> Result<()> {
             &mut trackdb)?; 
     }
     if let Some(debug_annot_json) = options.debug_annot_json.clone() {
-        writeln!("Writing annotation file to {:?}", &debug_annotfile_json)?;
+        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_json)?;
         annot.to_json(&debug_annot_json)?; 
     }
     
     // get the total bam reads
-    writeln!("Running samtools idxstats to get total bam read counts")?;
+    writeln!(stderr(), "Running samtools idxstats to get total bam read counts")?;
     let total_reads = get_bam_total_reads(&bamfiles)?;
-    writeln!("Found {} total reads", total_reads)?;
+    writeln!(stderr(), "Found {} total reads", total_reads)?;
     
     // find the constituitive exons
-    writeln!("Searching for constituitive exons in the annotation")?;
+    writeln!(stderr(), "Searching for constituitive exons in the annotation")?;
     let exonpairs = find_constituitive_exons(&annot, &options)?;
     if let Some(debug_exon_bigbed) = options.debug_exon_bigbed.clone() {
-        writeln!("Writing constituitive pairs to a bigbed file")?;
+        writeln!(stderr(), "Writing constituitive pairs to a bigbed file")?;
         write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &refs, &mut trackdb)?;
     }
         
-    writeln!("Reannotating cassette regions")?;
+    writeln!(stderr(), "Reannotating cassette regions")?;
     let reannotated_pairs = reannotate_regions(
         &annot,
         &exonpairs, 
@@ -1676,11 +1646,11 @@ fn run() -> Result<()> {
         &options,
         &mut trackdb)?;
     if let Some(debug_reannot_bigbed) = options.debug_reannot_bigbed.clone() {
-        writeln!("Writing reannotation to bigbed")?;
+        writeln!(stderr(), "Writing reannotation to bigbed")?;
         write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &refs, &mut trackdb)?;
     }
     
-    writeln!("Computing RPKM stats")?;
+    writeln!(stderr(), "Computing RPKM stats")?;
     let mut rpkmstats = compute_rpkm(
         &annot, 
         &reannotated_pairs, 
@@ -1690,13 +1660,13 @@ fn run() -> Result<()> {
         &refs,
         &mut trackdb)?;
     if let Some(debug_rpkmstats_json) = options.debug_rpkmstats_json.clone() {
-        writeln!("Writing RPKM stats to {:?}", &debug_rpkm_stats)?;
+        writeln!(stderr(), "Writing RPKM stats to {:?}", &debug_rpkmstats_json)?;
         let mut output: BufWriter<Box<Write>> = BufWriter::new(
             if debug_rpkmstats_json == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(debug_rpkmstats_json)?) });
             serde_json::to_writer_pretty(&mut output, &rpkmstats)?;
     }
-    writeln!("Writing RPKM stats to {:?}", &options.outfile)?;
+    writeln!(stderr(), "Writing RPKM stats to {:?}", &options.outfile)?;
     write_rpkm_stats(&options.outfile, &annot, &mut rpkmstats)?;
     Ok(())
 }
