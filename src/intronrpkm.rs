@@ -1066,6 +1066,7 @@ fn reannotate_regions(
                                         exon_regions[pos as usize] += 1;
                                     }
                                 }
+                                // write incomplete starts/ends histograms
                                 if i == 0 && start < exon.end && exon.end < end {
                                     incomplete_ends[exon.end as usize] += 1;
                                 }
