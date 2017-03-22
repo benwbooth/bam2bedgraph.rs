@@ -8,6 +8,7 @@ use std::str;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::vec::Vec;
+use std::ops::Range;
 
 extern crate regex;
 use regex::Regex;
@@ -259,13 +260,12 @@ fn analyze_bam(options: &Options,
             }
         }
 
-        let mut exons: Vec<(u64, u64)> = Vec::new();
-        let mut get_exons: Vec<(u64, u64)> = Vec::new();
-        cigar2exons(&mut get_exons, &read.cigar(), read.pos() as u64)?;
+        let mut exons: Vec<Range<u64>> = Vec::new();
+        let mut get_exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
         if !options.split_exons && !get_exons.is_empty() {
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
-            exons = vec![(first.0, last.1)];
+            exons = vec![Range{start: first.start, end: last.end}];
         } else {
             exons.append(&mut get_exons);
         }
@@ -309,9 +309,9 @@ fn analyze_bam(options: &Options,
                 if intervals.is_some() {
                     let intervals = intervals.as_ref().r()?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
-                        for r in intervals[&refs[lastchr as usize].1].find(exon.0..exon.1) {
-                            let overlap_length = std::cmp::min(exon.1, r.interval().end) -
-                                                 std::cmp::max(exon.0, r.interval().start);
+                        for r in intervals[&refs[lastchr as usize].1].find(&exon) {
+                            let overlap_length = std::cmp::min(exon.end, r.interval().end) -
+                                                 std::cmp::max(exon.start, r.interval().start);
 
                             let strandtype = if read.is_reverse() == (*r.data() == b'-') {
                                 's'
@@ -334,15 +334,15 @@ fn analyze_bam(options: &Options,
                     histogram.insert(tuple.clone(), Vec::new());
                 }
                 // keep track of chromosome sizes
-                if ref_length < exon.1 as u32 {
-                    refs[read.tid() as usize].0 = exon.1 as u32;
+                if ref_length < exon.end as u32 {
+                    refs[read.tid() as usize].0 = exon.end as u32;
                 }
                 if histogram[&tuple].len() < ref_length as usize {
                     let h = histogram.get_mut(&tuple).r()?;
                     h.resize(ref_length as usize, 0);
                 }
 
-                for pos in exon.0..exon.1 {
+                for pos in exon {
                     let h = histogram.get_mut(&tuple).r()?;
                     (*h)[pos as usize] += 1;
                 }
@@ -551,11 +551,10 @@ fn run() -> Result<()> {
                 interval_lists.insert(chr.clone(), Vec::new());
             }
 
-            let mut exons: Vec<(u64, u64)> = Vec::new();
-            cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
+            let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
             let interval_list = interval_lists.get_mut(&chr).r()?;
             for exon in exons {
-                interval_list.push((Interval::new(exon.0..exon.1)?,
+                interval_list.push((Interval::new(exon)?,
                                     if read.is_reverse() { b'-' } else { b'+' }));
             }
         }

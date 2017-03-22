@@ -56,7 +56,7 @@ extern crate itertools;
 use itertools::Itertools;
 
 extern crate sprs;
-use sprs::CsVec;
+use sprs::{CsVec, CsVecOwned};
 
 extern crate string_cache;
 use string_cache::DefaultAtom as Atom;
@@ -87,15 +87,10 @@ struct Options {
     gene_type: Vec<String>,
     #[structopt(long="cds_type", help = "The CDS type(s) to search for", name="CDS_TYPE")]
     cds_type: Vec<String>,
+    
     // flags
-    #[structopt(long="use_annotated_cassettes", help = "Should the annotated cassettes be used in reannotating?")]
-    use_annotated_cassettes: bool,
-    #[structopt(long="splice_must_match", help = "Do we require splice junctions to match the constituitive splice starts?")]
-    splice_must_match: bool,
-    //#[structopt(long="compare_constituitive", help = "Should constituitve exons be compared?")]
-    //compare_constituitive: bool,
-    //#[structopt(long="compare_cassette", help = "Should cassette exons be compared?")]
-    //compare_cassette: bool,
+    #[structopt(long="max_slippage", help = "How many bases (or % of exon length) to search for start/stop histogram peaks", name="MAX_SLIPPAGE", default_value="10")]
+    max_slippage: String,
     
     // debug output files
     #[structopt(long="debug_annot_gff", help = "Write the input annotation as a gff debug file", name="DEBUG_ANNOT_GFF_FILE")]
@@ -404,10 +399,10 @@ impl IndexedAnnotation {
                 }
                 // enqueue the missing information
                 let mut update = Record::new();
-                if let Some((seqname, _)) = seqname.iter().max_by(|a, b| a.1.cmp(b.1)) {
+                if let Some((seqname, _)) = seqname.iter().max_by_key(|a| a.1) {
                     update.seqname = seqname.clone();
                 }
-                if let Some((source, _)) = source.iter().max_by(|a, b| a.1.cmp(b.1)) {
+                if let Some((source, _)) = source.iter().max_by_key(|a| a.1) {
                     update.source = source.clone();
                 }
                 if let Some(start) = start {
@@ -416,7 +411,7 @@ impl IndexedAnnotation {
                 if let Some(end) = end {
                     update.end = end;
                 }
-                if let Some((strand, _)) = strand.iter().max_by(|a, b| a.1.cmp(b.1)) {
+                if let Some((strand, _)) = strand.iter().max_by_key(|a| a.1) {
                     update.strand = strand.clone();
                 }
                 updates.push((row, update));
@@ -738,7 +733,7 @@ struct ConstituitivePair {
     exon2_row: usize,
     // start..end, optional cassette_row
     cassettes: Vec<Cassette>,
-    mapped_reads: IntervalTree<u64, String>,
+    mapped_reads: IntervalTree<u64,Atom>,
 }
 impl serde::Serialize for ConstituitivePair
 {
@@ -749,7 +744,7 @@ impl serde::Serialize for ConstituitivePair
         ia.serialize_field("exon1_row", &self.exon1_row)?;
         ia.serialize_field("exon2_row", &self.exon2_row)?;
         ia.serialize_field("cassettes", &self.cassettes)?;
-        let mut mapped_reads = Vec::<((u64, u64),String)>::new();
+        let mut mapped_reads = Vec::<((u64, u64),Atom)>::new();
         for node in self.mapped_reads.find(0..std::u64::MAX) {
             mapped_reads.push(((node.interval().start,node.interval().end), node.data().clone()));
         }
@@ -954,12 +949,12 @@ fn reannotate_regions(
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
     // bigwig histograms
-    let mut plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
-    let mut minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
-    let mut start_plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
-    let mut start_minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
-    let mut end_plus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
-    let mut end_minus_bw_histo = HashMap::<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>::new();
+    let mut plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut start_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut start_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut end_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut end_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
     // allocate the bigwig histograms
     for (chr, &(_, length)) in refs {
         if options.debug_bigwig.is_some() {
@@ -977,18 +972,22 @@ fn reannotate_regions(
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
         let reflength = refs[&exon1.seqname].1;
-        let mut histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
-        let mut start_histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
-        let mut end_histo = CsVec::<u64,Vec<usize>,Vec<u64>>::empty(reflength as usize);
-        let mut mapped_reads = IntervalTree::<u64, String>::new();
+        let mut histo = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut start_histo = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut end_histo = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut exon_regions = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut incomplete_starts = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut incomplete_ends = CsVecOwned::<u64>::empty(reflength as usize);
+        let mut mapped_reads = IntervalTree::<u64, Atom>::new();
+        let mut cassettes = Vec::<Cassette>::new();
         for (b, bamfile) in bamfiles.iter().enumerate() {
             let read1strand = bamstrand[b];
             let mut bam = IndexedReader::from_path(bamfile)?;
             let chr = &annot.rows[pair.exon1_row].seqname;
             if let Some(ref_) = refs.get(chr) {
                 let tid = ref_.0;
-                let start = &annot.rows[pair.exon1_row].start-1;
-                let end = &annot.rows[pair.exon2_row].end;
+                let start = annot.rows[pair.exon1_row].end;
+                let end = annot.rows[pair.exon2_row].start-1;
                 let strand = &annot.rows[pair.exon1_row].strand;
                 let strand_is_plus = strand == "+";
                 let mut bw_histogram = 
@@ -1001,51 +1000,185 @@ fn reannotate_regions(
                     if strand_is_plus { end_plus_bw_histo.get_mut(chr).r()? }
                     else { end_minus_bw_histo.get_mut(chr).r()? };
                 
-                bam.seek(tid, start as u32, *end as u32)?;
+                // group reads by pairs
+                let mut read_pairs = HashMap::<Atom,Vec<Vec<Range<u64>>>>::new();
+                bam.seek(tid, start as u32, end as u32)?;
                 for read in bam.records() {
                     let read = read?;
+                    let read_name = Atom::from(str::from_utf8(read.qname())?);
                     // make sure the read's strand matches
                     if let Some(is_read1strand) = read1strand {
                         if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
                             continue;
                         }
                     }
-                    let mut exons = Vec::<(u64, u64)>::new();
-                    cigar2exons(&mut exons, &read.cigar(), read.pos() as u64)?;
-                    // calculate introns
-                    let mut introns = Vec::<(u64, u64)>::new();
-                    for (i, exon) in exons.iter().enumerate() {
-                        mapped_reads.insert(Interval::new(exon.0..exon.1)?, String::from_utf8(read.qname().to_vec())?);
-                        if i < exons.len()-1 {
-                            introns.push((exon.1, exons[i+1].0));
-                        }
+                    let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+                    read_pairs.entry(read_name).or_insert_with(Vec::new).push(exons);
+                }
+                for (read_name,read_pair) in read_pairs {
+                    // at least one of the read pairs must match a constituitive splice junction
+                    let mut matches_splice = false;
+                    for exons in &read_pair {
+                        matches_splice = exons.iter().enumerate().any(|(i,exon)| 
+                            (i < exons.len()-1 && exon.end == exon1.end) || 
+                            (i > 0 && exon.start == exon2.start-1));
+                        if matches_splice { break }
                     }
-                    // write the internal reads histogram
+                    if !matches_splice { continue }
                     
-                    // write the start/stop histograms
-                    let overlaps_constituitives = if options.splice_must_match {
-                            introns.iter().any(|intron| intron.0 == exon1.start-1 || intron.1 == exon2.end)
+                    for exons in &read_pair {
+                        // write the internal reads histogram and mapped_reads
+                        for exon in exons {
+                            mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
+                            for pos in exon.start..exon.end {
+                                histo[pos as usize] += 1;
+                                bw_histogram[pos as usize] += 1;
+                            }
                         }
-                        else {
-                            exons.iter().any(|exon| 
-                                (exon1.start-1 < exon.1 && exon.0 < exon1.end) || 
-                                   (exon2.start-1 < exon.1 && exon.0 < exon2.end))
-                        };
-                    if overlaps_constituitives {
-                        for intron in &introns {
-                            start_histo[(intron.0-exon1.start+1) as usize] += 1;
-                            end_histo[(intron.1-exon1.start+1) as usize] += 1;
-                            
-                            if options.debug_bigwig.is_some() {
-                                start_bw_histogram[intron.0 as usize] += 1;
-                                end_bw_histogram[intron.1 as usize] += 1;
+                        
+                        // write the start/stop histograms
+                        let matches_splice = exons.iter().enumerate().any(|(i,exon)| 
+                            (i < exons.len()-1 && exon.end == exon1.end) || 
+                            (i > 0 && exon.start == exon2.start-1));
+                        if matches_splice {
+                            for (i, exon) in exons.iter().enumerate() {
+                                // write start/stop histograms
+                                if i > 0 {
+                                    start_histo[exon.start as usize] += 1;
+                                }
+                                if i < exons.len()-1 {
+                                    end_histo[exon.end as usize] += 1;
+                                }
+                                if options.debug_bigwig.is_some() {
+                                    if i > 0 {
+                                        start_bw_histogram[exon.start as usize] += 1;
+                                    }
+                                    if i < exons.len()-1 {
+                                        end_bw_histogram[exon.end as usize] += 1;
+                                    }
+                                }
+                                
+                                // write the exon_regions histogram
+                                if i > 0 && i < exons.len()-1 && start < exon.start && exon.end < end {
+                                    for pos in exon.start..exon.end {
+                                        exon_regions[pos as usize] += 1;
+                                    }
+                                }
+                                if i == 0 && start < exon.end && exon.end < end {
+                                    incomplete_ends[exon.end as usize] += 1;
+                                }
+                                if i == exons.len()-1 && start < exon.start && exon.start < end {
+                                    incomplete_starts[exon.start as usize] += 1;
+                                }
                             }
                         }
                     }
                 }
+                // fill in the incompletes
+                'INCOMPLETE_START:
+                for (i, _) in incomplete_starts.iter() {
+                    for j in i..end as usize {
+                        if histo.get(j).is_none() {
+                            if end_histo.get(j).is_some() {
+                                for pos in i..j {
+                                    exon_regions[pos as usize] += 1;
+                                }
+                            }
+                            break 'INCOMPLETE_START;
+                        }
+                    }
+                }
+                'INCOMPLETE_END:
+                for (i, _) in incomplete_ends.iter() {
+                    for j in (start as usize..i-1).rev() {
+                        if histo.get(j-1).is_none() {
+                            if start_histo.get(j).is_some() {
+                                for pos in j..i {
+                                    exon_regions[pos as usize] += 1;
+                                }
+                            }
+                            break 'INCOMPLETE_END;
+                        }
+                    }
+                }
+                // iterate through exon regions
+                lazy_static! {
+                    static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
+                }
+                let caps = MAX_SLIPPAGE.captures(&options.max_slippage).r()?;
+                let max_slippage = caps.get(1).r()?.as_str().parse::<u64>()?;
+                let mut exon_start = 0u64;
+                let mut prev_i = std::usize::MAX;
+                for (i, _) in exon_regions.iter() {
+                    if i-1 != prev_i {
+                        if prev_i != std::usize::MAX {
+                            let exon_end = prev_i as u64;
+                            let max_slippage = if caps.get(2).is_some() 
+                                { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as u64 }
+                                else { max_slippage };
+                            // find histogram peaks of the start and end
+                            let mut max = 0u64;
+                            let mut reannot_exon_start = exon_start;
+                            for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
+                                if let Some(val) = start_histo.get(j as usize) {
+                                    if max < *val {  
+                                        max = *val;
+                                        reannot_exon_start = j;
+                                    }
+                                }
+                            }
+                            let mut max = 0u64;
+                            let mut reannot_exon_end = exon_end;
+                            for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
+                                if let Some(val) = end_histo.get(j as usize) {
+                                    if max < *val {
+                                        max = *val;
+                                        reannot_exon_end = j;
+                                    }
+                                }
+                            }
+                            let mut max = 0u64;
+                            let mut reannot_exon_end2 = exon_end;
+                            for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
+                                if let Some(val) = end_histo.get(j as usize) {
+                                    if max < *val {
+                                        max = *val;
+                                        reannot_exon_end2 = j;
+                                    }
+                                }
+                            }
+                            let mut max = 0u64;
+                            let mut reannot_exon_start2 = exon_start;
+                            for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
+                                if let Some(val) = start_histo.get(j as usize) {
+                                    if max < *val {  
+                                        max = *val;
+                                        reannot_exon_start2 = j;
+                                    }
+                                }
+                            }
+                            let (exon_start, exon_end) = 
+                                if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
+                                {(reannot_exon_start2, reannot_exon_end2)}
+                                else {(reannot_exon_start, reannot_exon_end)};
+                            // store the reannotated cassette exon
+                            cassettes.push(Cassette {
+                                range: exon_start..exon_end,
+                                cassette_row: None,
+                            });
+                        }
+                        exon_start = i as u64;
+                    }
+                    prev_i = i;
+                }
             }
         }
-        // TODO: de novo cassette annotation code goes here:
+        reannotated.push(ConstituitivePair {
+            exon1_row: pair.exon1_row,
+            exon2_row: pair.exon2_row,
+            cassettes: cassettes,
+            mapped_reads: mapped_reads,
+        });
     }
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
@@ -1062,7 +1195,7 @@ fn reannotate_regions(
 
 fn write_bigwig(
     file: &str, 
-    histogram: &HashMap<Atom,CsVec<u64,Vec<usize>,Vec<u64>>>, 
+    histogram: &HashMap<Atom,CsVecOwned<u64>>, 
     refs: &LinkedHashMap<Atom,(u32,u32)>,
     strand: &str,
     trackdb: &mut BufWriter<Box<Write>>,
@@ -1239,7 +1372,7 @@ fn compute_rpkm(
             for gene_row in &gene_parents {
                 let mapped_reads = &pair.mapped_reads;
                 let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
-                let mut constituitive_reads = HashSet::<String>::new();
+                let mut constituitive_reads = HashSet::<Atom>::new();
                 for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
                     constituitive_reads.insert(read.data().clone());
                 }
@@ -1252,9 +1385,9 @@ fn compute_rpkm(
                         / (total_reads as f64 * constituitive_bases as f64)
                 };
                 
-                let mut cassette_reads = HashMap::<String,Vec<Range<u64>>>::new();
+                let mut cassette_reads = HashMap::<Atom,Vec<Range<u64>>>::new();
                 let mut cassette_features = Vec::<(Range<u64>,f64)>::new();
-                let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
+                let mut intron_reads = HashMap::<Atom,Vec<Range<u64>>>::new();
                 let mut intron_features = Vec::<Range<u64>>::new();
                 if pair.cassettes.is_empty() {
                     let intron_range = annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon1_row].end;
@@ -1317,8 +1450,7 @@ fn compute_rpkm(
                 let cassette_name = format!("{}.cassettes", pair_name);
                 let cassette_color = [255,0,0];
                 if !cassette_features.is_empty() {
-                    let max_exon = if let Some(me) = cassette_features.iter().
-                            max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Less)) 
+                    let max_exon = if let Some(me) = cassette_features.iter().max_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(Less)) 
                         { me.clone() } 
                         else { (cassette_features[0].0.start..cassette_features[0].0.start, 0f64) };
                     
@@ -1559,8 +1691,12 @@ fn run() -> Result<()> {
     options.cds_type =
         (if options.cds_type.is_empty() { vec!["CDS".to_string()] }
          else { options.cds_type.clone() }).into_iter().collect();
-    if !options.use_annotated_cassettes {
-        return Err("De-novo transcript reannotation is not yet supported!".into());
+    //  validate arguments
+    lazy_static! {
+        static ref VALIDATE_MAX_SLIPPAGE: Regex = Regex::new(r"^[0-9]+%?$").unwrap();
+    }
+    if !VALIDATE_MAX_SLIPPAGE.is_match(&options.max_slippage) {
+        return Err(format!("Invalid max_slippage value {}: must be number of bases or % of exon length", options.max_slippage).into());
     }
     
     // set up the trackdb writer

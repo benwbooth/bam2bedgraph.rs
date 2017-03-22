@@ -1,6 +1,7 @@
 #![recursion_limit = "1024"]
 use std::str;
 use std::vec::Vec;
+use std::ops::Range;
 
 extern crate regex;
 
@@ -51,13 +52,14 @@ pub mod errors {
 
 use errors::*;
 
-pub fn cigar2exons(exons: &mut Vec<(u64, u64)>, cigar: &[Cigar], pos: u64) -> Result<()> {
+pub fn cigar2exons(cigar: &[Cigar], pos: u64) -> Result<Vec<Range<u64>>> {
+    let mut exons = Vec::<Range<u64>>::new();
     let mut pos = pos;
     for op in cigar {
         match op {
             &Cigar::Match(length) => {
                 pos += length as u64;
-                exons.push((pos - length as u64, pos));
+                exons.push(Range{start: pos - length as u64, end: pos});
                 Ok(())
             }
             &Cigar::RefSkip(length) |
@@ -72,5 +74,5 @@ pub fn cigar2exons(exons: &mut Vec<(u64, u64)>, cigar: &[Cigar], pos: u64) -> Re
             c => Err(format!("Bad CIGAR string: {:?}", c)),
         }?;
     }
-    Ok(())
+    Ok(exons)
 }
