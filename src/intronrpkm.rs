@@ -595,7 +595,7 @@ impl IndexedAnnotation {
                         if transcript_types.is_empty() || transcript_types.contains(&transcript.feature_type) {
                             seen_transcript.insert(*transcript_row);
                             
-                            // get the exon features
+                            // get the exon and CDS features
                             let mut exons = Vec::<usize>::new();
                             let mut cds_features = Vec::<usize>::new();
                             let mut exon_starts = HashSet::<u64>::new();
@@ -608,13 +608,16 @@ impl IndexedAnnotation {
                                         exon_ends.insert(self.rows[*child_row].end);
                                         exons.push(*child_row);
                                     }
+                                    else if cds_types.contains(&child.feature_type) {
+                                        cds_features.push(*child_row);
+                                    }
                                 }
                             }
                             if exons.is_empty() { exons.push(*transcript_row); }
                             exons.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
                             cds_features.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
                             
-                            // get the cds features
+                            // get the cds ranges by unsplicing the CDS features
                             let mut cdss = Vec::<Range<u64>>::new();
                             for cds_feature_row in cds_features {
                                 let cds_feature = &self.rows[cds_feature_row];
