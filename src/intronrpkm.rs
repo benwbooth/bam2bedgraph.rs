@@ -91,6 +91,8 @@ struct Options {
     // flags
     #[structopt(long="max_slippage", help = "How many bases (or % of exon length) to search for start/stop histogram peaks", name="MAX_SLIPPAGE", default_value="10")]
     max_slippage: String,
+    #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons with only one splice junction?")]
+    fillin_incomplete_exons: bool,
     
     // debug output files
     #[structopt(long="debug_annot_gff", help = "Write the input annotation as a gff debug file", name="DEBUG_ANNOT_GFF_FILE")]
@@ -1077,29 +1079,31 @@ fn reannotate_regions(
             }
         }
         // fill in the incompletes
-        'INCOMPLETE_START:
-        for (i, _) in incomplete_starts.iter() {
-            for j in i..end as usize {
-                if histo.get(j).is_none() {
-                    if end_histo.get(j).is_some() {
-                        for pos in i..j {
-                            exon_regions[pos as usize] += 1;
+        if options.fillin_incomplete_exons {
+            'INCOMPLETE_START:
+            for (i, _) in incomplete_starts.iter() {
+                for j in i..end as usize {
+                    if histo.get(j).is_none() {
+                        if end_histo.get(j).is_some() {
+                            for pos in i..j {
+                                exon_regions[pos as usize] += 1;
+                            }
                         }
+                        break 'INCOMPLETE_START;
                     }
-                    break 'INCOMPLETE_START;
                 }
             }
-        }
-        'INCOMPLETE_END:
-        for (i, _) in incomplete_ends.iter() {
-            for j in (start as usize..i-1).rev() {
-                if histo.get(j-1).is_none() {
-                    if start_histo.get(j).is_some() {
-                        for pos in j..i {
-                            exon_regions[pos as usize] += 1;
+            'INCOMPLETE_END:
+            for (i, _) in incomplete_ends.iter() {
+                for j in (start as usize..i-1).rev() {
+                    if histo.get(j-1).is_none() {
+                        if start_histo.get(j).is_some() {
+                            for pos in j..i {
+                                exon_regions[pos as usize] += 1;
+                            }
                         }
+                        break 'INCOMPLETE_END;
                     }
-                    break 'INCOMPLETE_END;
                 }
             }
         }
