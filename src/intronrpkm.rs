@@ -595,61 +595,87 @@ impl IndexedAnnotation {
                         if transcript_types.is_empty() || transcript_types.contains(&transcript.feature_type) {
                             seen_transcript.insert(*transcript_row);
                             
-                            // choose a unique transcript name
-                            let transcript_name = transcript.attributes.get(&id_atom).or_else(||
-                                transcript.attributes.get(&name_atom));
-                            let mut transcript_name = match transcript_name {
-                                Some(t) => t.clone(),
-                                None => Atom::from(format!("{}:{}..{}:{}", 
-                                    transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
-                            };
-                            while transcript_names.contains(&transcript_name) {
-                                lazy_static! {
-                                    static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
-                                }
-                                transcript_name = Atom::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
-                                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
-                            }
-                            transcript_names.insert(transcript_name.clone());
-                            
-                            // get the exons and cds features
+                            // get the exon features
                             let mut exons = Vec::<usize>::new();
-                            let mut cds = Vec::<usize>::new();
+                            let mut cds_features = Vec::<usize>::new();
+                            let mut exon_starts = HashSet::<u64>::new();
+                            let mut exon_ends = HashSet::<u64>::new();
                             for child_row in &self.row2children[transcript_row] {
                                 let child = &self.rows[*child_row];
                                 if child.seqname == transcript.seqname {
                                     if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
+                                        exon_starts.insert(self.rows[*child_row].start-1);
+                                        exon_ends.insert(self.rows[*child_row].end);
                                         exons.push(*child_row);
-                                    }
-                                    if cds_types.contains(&child.feature_type) {
-                                        cds.push(*child_row);
                                     }
                                 }
                             }
                             if exons.is_empty() { exons.push(*transcript_row); }
                             exons.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
-                            cds.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
+                            cds_features.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
+                            
+                            // get the cds features
+                            let mut cdss = Vec::<Range<u64>>::new();
+                            for cds_feature_row in cds_features {
+                                let cds_feature = &self.rows[cds_feature_row];
+                                if !cdss.is_empty() && 
+                                    exon_ends.contains(&cdss[cdss.len()-1].end) && 
+                                    exon_starts.contains(&(cds_feature.start-1)) 
+                                {
+                                    // extend current CDS if this is a splice
+                                    if let Some(last) = cdss.last_mut() {
+                                        (*last).end = cds_feature.end;
+                                    }
+                                }
+                                else {
+                                    // otherwise add new CDS
+                                    cdss.push(cds_feature.start-1..cds_feature.end);
+                                }
+                            }
+                            cdss.sort_by_key(|a| a.start);
                             
                             // write the bed record
                             let score = 0;
                             let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
                             let start = self.rows[exons[0]].start-1;
                             let end = self.rows[exons[exons.len()-1]].end;
-                            let line = &[
-                                transcript.seqname.as_ref(),
-                                &start.to_string(),
-                                &end.to_string(),
-                                &transcript_name,
-                                &score.to_string(),
-                                &transcript.strand,
-                                &(if cds.is_empty() { start } else { self.rows[cds[0]].start-1 }).to_string(),
-                                &(if cds.is_empty() { start } else { self.rows[cds[cds.len()-1]].end }).to_string(),
-                                item_rgb,
-                                &exons.len().to_string(),
-                                &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
-                                &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
-                            ].join("\t");
-                            writeln!(bw, "{}", line)?;
+                            // make a separate bed record for each cds
+                            if cdss.is_empty() { cdss.push(start..start) }
+                            for cds in cdss {
+                                // choose a unique transcript name
+                                let transcript_name = transcript.attributes.get(&id_atom).or_else(||
+                                    transcript.attributes.get(&name_atom));
+                                let mut transcript_name = match transcript_name {
+                                    Some(t) => t.clone(),
+                                    None => Atom::from(format!("{}:{}..{}:{}", 
+                                        transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
+                                };
+                                while transcript_names.contains(&transcript_name) {
+                                    lazy_static! {
+                                        static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
+                                    }
+                                    transcript_name = Atom::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
+                                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                                }
+                                transcript_names.insert(transcript_name.clone());
+                                
+                                // write the bed line
+                                let line = &[
+                                    transcript.seqname.as_ref(),
+                                    &start.to_string(),
+                                    &end.to_string(),
+                                    &transcript_name,
+                                    &score.to_string(),
+                                    &transcript.strand,
+                                    &cds.start.to_string(),
+                                    &cds.end.to_string(),
+                                    item_rgb,
+                                    &exons.len().to_string(),
+                                    &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
+                                    &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
+                                ].join("\t");
+                                writeln!(bw, "{}", line)?;
+                            }
                         }
                     }
                 }
@@ -1097,7 +1123,7 @@ fn reannotate_regions(
             'INCOMPLETE_END:
             for (i, _) in incomplete_ends.iter() {
                 for j in (start as usize..i-1).rev() {
-                    if histo.get(j-1).is_none() {
+                    if j == 0 || histo.get(j-1).is_none() {
                         if start_histo.get(j).is_some() {
                             for pos in j..i {
                                 exon_regions[pos as usize] += 1;
