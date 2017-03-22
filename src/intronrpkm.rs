@@ -603,13 +603,13 @@ impl IndexedAnnotation {
                             for child_row in &self.row2children[transcript_row] {
                                 let child = &self.rows[*child_row];
                                 if child.seqname == transcript.seqname {
-                                    if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
+                                    if cds_types.contains(&child.feature_type) {
+                                        cds_features.push(*child_row);
+                                    }
+                                    else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
                                         exon_starts.insert(self.rows[*child_row].start-1);
                                         exon_ends.insert(self.rows[*child_row].end);
                                         exons.push(*child_row);
-                                    }
-                                    else if cds_types.contains(&child.feature_type) {
-                                        cds_features.push(*child_row);
                                     }
                                 }
                             }
