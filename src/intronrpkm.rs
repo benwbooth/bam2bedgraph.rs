@@ -971,6 +971,8 @@ fn reannotate_regions(
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
+        let start = annot.rows[pair.exon1_row].end;
+        let end = annot.rows[pair.exon2_row].start-1;
         let reflength = refs[&exon1.seqname].1;
         let mut histo = CsVecOwned::<u64>::empty(reflength as usize);
         let mut start_histo = CsVecOwned::<u64>::empty(reflength as usize);
@@ -986,8 +988,6 @@ fn reannotate_regions(
             let chr = &annot.rows[pair.exon1_row].seqname;
             if let Some(ref_) = refs.get(chr) {
                 let tid = ref_.0;
-                let start = annot.rows[pair.exon1_row].end;
-                let end = annot.rows[pair.exon2_row].start-1;
                 let strand = &annot.rows[pair.exon1_row].strand;
                 let strand_is_plus = strand == "+";
                 let mut bw_histogram = 
@@ -1074,104 +1074,104 @@ fn reannotate_regions(
                         }
                     }
                 }
-                // fill in the incompletes
-                'INCOMPLETE_START:
-                for (i, _) in incomplete_starts.iter() {
-                    for j in i..end as usize {
-                        if histo.get(j).is_none() {
-                            if end_histo.get(j).is_some() {
-                                for pos in i..j {
-                                    exon_regions[pos as usize] += 1;
-                                }
-                            }
-                            break 'INCOMPLETE_START;
+            }
+        }
+        // fill in the incompletes
+        'INCOMPLETE_START:
+        for (i, _) in incomplete_starts.iter() {
+            for j in i..end as usize {
+                if histo.get(j).is_none() {
+                    if end_histo.get(j).is_some() {
+                        for pos in i..j {
+                            exon_regions[pos as usize] += 1;
                         }
                     }
-                }
-                'INCOMPLETE_END:
-                for (i, _) in incomplete_ends.iter() {
-                    for j in (start as usize..i-1).rev() {
-                        if histo.get(j-1).is_none() {
-                            if start_histo.get(j).is_some() {
-                                for pos in j..i {
-                                    exon_regions[pos as usize] += 1;
-                                }
-                            }
-                            break 'INCOMPLETE_END;
-                        }
-                    }
-                }
-                // iterate through exon regions
-                lazy_static! {
-                    static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
-                }
-                let caps = MAX_SLIPPAGE.captures(&options.max_slippage).r()?;
-                let max_slippage = caps.get(1).r()?.as_str().parse::<u64>()?;
-                let mut exon_start = 0u64;
-                let mut prev_i = std::usize::MAX;
-                for (i, _) in exon_regions.iter() {
-                    if i-1 != prev_i {
-                        if prev_i != std::usize::MAX {
-                            let exon_end = prev_i as u64;
-                            let max_slippage = if caps.get(2).is_some() 
-                                { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as u64 }
-                                else { max_slippage };
-                            // find histogram peaks of the start and end
-                            let mut max = 0u64;
-                            let mut reannot_exon_start = exon_start;
-                            for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
-                                if let Some(val) = start_histo.get(j as usize) {
-                                    if max < *val {  
-                                        max = *val;
-                                        reannot_exon_start = j;
-                                    }
-                                }
-                            }
-                            let mut max = 0u64;
-                            let mut reannot_exon_end = exon_end;
-                            for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
-                                if let Some(val) = end_histo.get(j as usize) {
-                                    if max < *val {
-                                        max = *val;
-                                        reannot_exon_end = j;
-                                    }
-                                }
-                            }
-                            let mut max = 0u64;
-                            let mut reannot_exon_end2 = exon_end;
-                            for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
-                                if let Some(val) = end_histo.get(j as usize) {
-                                    if max < *val {
-                                        max = *val;
-                                        reannot_exon_end2 = j;
-                                    }
-                                }
-                            }
-                            let mut max = 0u64;
-                            let mut reannot_exon_start2 = exon_start;
-                            for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
-                                if let Some(val) = start_histo.get(j as usize) {
-                                    if max < *val {  
-                                        max = *val;
-                                        reannot_exon_start2 = j;
-                                    }
-                                }
-                            }
-                            let (exon_start, exon_end) = 
-                                if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
-                                {(reannot_exon_start2, reannot_exon_end2)}
-                                else {(reannot_exon_start, reannot_exon_end)};
-                            // store the reannotated cassette exon
-                            cassettes.push(Cassette {
-                                range: exon_start..exon_end,
-                                cassette_row: None,
-                            });
-                        }
-                        exon_start = i as u64;
-                    }
-                    prev_i = i;
+                    break 'INCOMPLETE_START;
                 }
             }
+        }
+        'INCOMPLETE_END:
+        for (i, _) in incomplete_ends.iter() {
+            for j in (start as usize..i-1).rev() {
+                if histo.get(j-1).is_none() {
+                    if start_histo.get(j).is_some() {
+                        for pos in j..i {
+                            exon_regions[pos as usize] += 1;
+                        }
+                    }
+                    break 'INCOMPLETE_END;
+                }
+            }
+        }
+        // iterate through exon regions
+        lazy_static! {
+            static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
+        }
+        let caps = MAX_SLIPPAGE.captures(&options.max_slippage).r()?;
+        let max_slippage = caps.get(1).r()?.as_str().parse::<u64>()?;
+        let mut exon_start = 0u64;
+        let mut prev_i = std::usize::MAX;
+        for (i, _) in exon_regions.iter() {
+            if i-1 != prev_i {
+                if prev_i != std::usize::MAX {
+                    let exon_end = prev_i as u64;
+                    let max_slippage = if caps.get(2).is_some() 
+                        { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as u64 }
+                        else { max_slippage };
+                    // find histogram peaks of the start and end
+                    let mut max = 0u64;
+                    let mut reannot_exon_start = exon_start;
+                    for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
+                        if let Some(val) = start_histo.get(j as usize) {
+                            if max < *val {  
+                                max = *val;
+                                reannot_exon_start = j;
+                            }
+                        }
+                    }
+                    let mut max = 0u64;
+                    let mut reannot_exon_end = exon_end;
+                    for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
+                        if let Some(val) = end_histo.get(j as usize) {
+                            if max < *val {
+                                max = *val;
+                                reannot_exon_end = j;
+                            }
+                        }
+                    }
+                    let mut max = 0u64;
+                    let mut reannot_exon_end2 = exon_end;
+                    for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
+                        if let Some(val) = end_histo.get(j as usize) {
+                            if max < *val {
+                                max = *val;
+                                reannot_exon_end2 = j;
+                            }
+                        }
+                    }
+                    let mut max = 0u64;
+                    let mut reannot_exon_start2 = exon_start;
+                    for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
+                        if let Some(val) = start_histo.get(j as usize) {
+                            if max < *val {  
+                                max = *val;
+                                reannot_exon_start2 = j;
+                            }
+                        }
+                    }
+                    let (exon_start, exon_end) = 
+                        if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
+                        {(reannot_exon_start2, reannot_exon_end2)}
+                        else {(reannot_exon_start, reannot_exon_end)};
+                    // store the reannotated cassette exon
+                    cassettes.push(Cassette {
+                        range: exon_start..exon_end,
+                        cassette_row: None,
+                    });
+                }
+                exon_start = i as u64;
+            }
+            prev_i = i;
         }
         reannotated.push(ConstituitivePair {
             exon1_row: pair.exon1_row,
