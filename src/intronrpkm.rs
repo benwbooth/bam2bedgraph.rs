@@ -76,7 +76,7 @@ struct Options {
     #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
     bam: Vec<String>,
     // output file
-    #[structopt(long="out", short="o", help = "Output file", name="ANNOT_FILE", default_value="-")]
+    #[structopt(long="out", short="o", help = "Output file", name="OUT_FILE", default_value="-")]
     outfile: String,
     // feature types filter
     #[structopt(long="exon_type", help = "The exon type(s) to search for", name="EXON_TYPE")]
@@ -92,9 +92,11 @@ struct Options {
     #[structopt(long="max_slippage", help = "How many bases (or % of exon length) to search for start/stop histogram peaks", name="MAX_SLIPPAGE", default_value="10")]
     max_slippage: String,
     #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons with only one splice junction?")]
-    fillin_incomplete_exons: bool,
+    fill_incomplete_exons: bool,
     
     // debug output files
+    #[structopt(long="debug", help = "Output all debug files?")]
+    debug: bool,
     #[structopt(long="debug_annot_gff", help = "Write the input annotation as a gff debug file", name="DEBUG_ANNOT_GFF_FILE")]
     debug_annot_gff: Option<String>,
     #[structopt(long="debug_annot_gtf", help = "Write the input annotation as a gtf debug file", name="DEBUG_ANNOT_GTF_FILE")]
@@ -1109,7 +1111,7 @@ fn reannotate_regions(
             }
         }
         // fill in the incompletes
-        if options.fillin_incomplete_exons {
+        if options.fill_incomplete_exons {
             'INCOMPLETE_START:
             for (i, _) in incomplete_starts.iter() {
                 for j in i..end as usize {
@@ -1716,9 +1718,9 @@ fn run() -> Result<()> {
     options.gene_type =
         (if options.gene_type.is_empty() { vec!["gene".to_string()] } 
          else { options.gene_type.clone() }).into_iter().collect();
-    options.transcript_type = 
-        (if options.transcript_type.is_empty() { vec!["mRNA".to_string()] } 
-         else { options.transcript_type.clone() }).into_iter().collect();
+    //options.transcript_type = 
+    //    (if options.transcript_type.is_empty() { vec!["mRNA".to_string()] } 
+    //     else { options.transcript_type.clone() }).into_iter().collect();
     options.exon_type =
         (if options.exon_type.is_empty() { vec!["exon".to_string()] }
          else { options.exon_type.clone() }).into_iter().collect();
@@ -1731,6 +1733,20 @@ fn run() -> Result<()> {
     }
     if !VALIDATE_MAX_SLIPPAGE.is_match(&options.max_slippage) {
         return Err(format!("Invalid max_slippage value {}: must be number of bases or % of exon length", options.max_slippage).into());
+    }
+    // set debug options if --debug flag is set
+    if options.debug {
+        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
+        if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
+        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
+        if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
+        if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(String::from("debug_exon.bb")) }
+        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
+        if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
+        if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(String::from("debug_rpkm.bb")) }
+        if options.debug_mapped_reads_bigbed.is_none() { options.debug_mapped_reads_bigbed = Some(String::from("debug_mapped_reads.bb")) }
+        if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(String::from("debug_rpkmstats.json")) }
+        if options.debug_trackdb.is_none() { options.debug_trackdb = Some(String::from("trackDb.txt")) }
     }
     
     // set up the trackdb writer
@@ -1757,16 +1773,17 @@ fn run() -> Result<()> {
     writeln!(stderr(), "Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
     let refs = get_bam_refs(&bamfiles[0])?;
     
+    let mrna_transcript_type = String::from("mRNA");
     let annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
         IndexedAnnotation::from_gff(&annotfile_gff, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).r()?)?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type))?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).r()?)?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type))?
     } else {
         return Err("No annotation file was given!".into());
     };
