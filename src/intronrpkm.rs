@@ -571,7 +571,7 @@ impl IndexedAnnotation {
     }
     
     fn to_bed(&self, 
-        file: &str, 
+        bed_file: &str, 
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String])
@@ -586,10 +586,9 @@ impl IndexedAnnotation {
         
         let id_atom = Atom::from("ID");
         let name_atom = Atom::from("Name");
-        let bed_file = format!("{}.bed", file);
         {   let mut bw = BufWriter::new(File::create(&bed_file)?);
             let mut chrs = self.tree.keys().collect::<Vec<_>>();
-            chrs.sort_by(|a,b| a.as_bytes().cmp(b.as_bytes()));
+            chrs.sort_by_key(|a| a.as_bytes());
             for chr in chrs {
                 for node in self.tree[chr].find(0..std::u64::MAX) {
                     let transcript_row = node.data();
@@ -603,22 +602,24 @@ impl IndexedAnnotation {
                             let mut cds_features = Vec::<usize>::new();
                             let mut exon_starts = HashSet::<u64>::new();
                             let mut exon_ends = HashSet::<u64>::new();
-                            for child_row in &self.row2children[transcript_row] {
-                                let child = &self.rows[*child_row];
-                                if child.seqname == transcript.seqname {
-                                    if cds_types.contains(&child.feature_type) {
-                                        cds_features.push(*child_row);
-                                    }
-                                    else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
-                                        exon_starts.insert(self.rows[*child_row].start-1);
-                                        exon_ends.insert(self.rows[*child_row].end);
-                                        exons.push(*child_row);
+                            if let Some(child_rows) = self.row2children.get(transcript_row) {
+                                for child_row in child_rows {
+                                    let child = &self.rows[*child_row];
+                                    if child.seqname == transcript.seqname {
+                                        if cds_types.contains(&child.feature_type) {
+                                            cds_features.push(*child_row);
+                                        }
+                                        else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
+                                            exon_starts.insert(self.rows[*child_row].start-1);
+                                            exon_ends.insert(self.rows[*child_row].end);
+                                            exons.push(*child_row);
+                                        }
                                     }
                                 }
                             }
                             if exons.is_empty() { exons.push(*transcript_row); }
-                            exons.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
-                            cds_features.sort_by(|a,b| self.rows[*a].start.cmp(&self.rows[*b].start));
+                            exons.sort_by_key(|a| self.rows[*a].start);
+                            cds_features.sort_by_key(|a| self.rows[*a].start);
                             
                             // get the cds ranges by unsplicing the CDS features
                             let mut cdss = Vec::<Range<u64>>::new();

@@ -42,3 +42,6 @@ path = "src/bam2bedgraph.rs"
 [[bin]]
 name = "intronrpkm"
 path = "src/intronrpkm.rs"
+
+[profile.dev]
+opt-level = 2
