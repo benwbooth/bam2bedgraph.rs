@@ -1771,7 +1771,7 @@ fn run() -> Result<()> {
         Options::clap().print_help()?;
         return Err("No bam files were passed in!".into());
     }
-    writeln!(stderr(), "Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
+    writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
     let refs = get_bam_refs(&bamfiles[0])?;
     
     let mrna_transcript_type = String::from("mRNA");
