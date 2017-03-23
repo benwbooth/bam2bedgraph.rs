@@ -276,7 +276,8 @@ impl IndexedAnnotation {
         let file = BufReader::new(&f);
         let id_atom = Atom::from("ID");
         let name_atom = Atom::from("Name");
-        for (row, line) in file.lines().enumerate() {
+        for line in file.lines() {
+            let row = rows.len();
             if let Ok(record) = Record::from_row(row, &line?, filetype) {
                 if let Some(id) = record.attributes.get(&id_atom) {
                     id2row.insert(id.clone(), row);
@@ -1862,7 +1863,7 @@ fn run() -> Result<()> {
 
 fn main() {
     // enable stack traces
-    std::env::set_var("RUST_BACKTRACE", "1");
+    std::env::set_var("RUST_BACKTRACE", "full");
 
     if let Err(ref e) = run() {
         println!("error: {}", e);
