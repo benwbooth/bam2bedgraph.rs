@@ -75,6 +75,8 @@ struct Options {
     bam2: Vec<String>,
     #[structopt(long="bam", short="u", help = "The set of unstranded .bam files to analyze", name="BAMFILE")]
     bam: Vec<String>,
+    #[structopt(long="chrmap", help = "Optional tab-delimited chr name mapping file", name="CHRMAP_FILE")]
+    chrmap_file: Option<String>,
     // output file
     #[structopt(long="out", short="o", help = "Output file", name="OUT_FILE", default_value="-")]
     outfile: String,
@@ -162,7 +164,7 @@ impl Record {
     fn new() -> Record {
         Record { ..Default::default() }
     }
-    fn from_row(row: usize, line: &str, filetype: &str) -> Result<Record> {
+    fn from_row(row: usize, line: &str, filetype: &str, chrmap: &HashMap<Atom,Atom>) -> Result<Record> {
         lazy_static! {
             static ref COMMENT: Regex = Regex::new(r"^#").unwrap();
             static ref GTF_ATTR: Regex = Regex::new(r#"^(?P<key>\S+)\s+(?:"(?P<qval>[^"]*)"|(?P<val>\S+));\s*"#).unwrap();
@@ -171,9 +173,11 @@ impl Record {
             return Err("Comment".into());
         }
         let fields: Vec<_> = line.split('\t').collect();
+        let seqname = Atom::from(*fields.get(0).unwrap_or(&""));
+        let seqname = chrmap.get(&seqname).unwrap_or(&seqname);
         Ok(Record {
             row: row,
-            seqname: Atom::from(*fields.get(0).unwrap_or(&"")),
+            seqname: seqname.clone(),
             source: Atom::from(*fields.get(1).unwrap_or(&"")),
             feature_type: Atom::from(*fields.get(2).unwrap_or(&"")),
             start: fields.get(3).unwrap_or(&"0").parse::<u64>()?,
@@ -239,6 +243,7 @@ struct IndexedAnnotation {
     row2parents: HashMap<usize, Vec<usize>>,
     row2children: HashMap<usize, Vec<usize>>,
     tree: HashMap<Atom, IntervalTree<u64, usize>>,
+    chrmap: HashMap<Atom, Atom>,
 }
 impl serde::Serialize for IndexedAnnotation
 {
@@ -259,17 +264,34 @@ impl serde::Serialize for IndexedAnnotation
             tree.insert(chr.clone(), nodes);
         }
         ia.serialize_field("tree", &tree)?;
+        ia.serialize_field("chrmap", &self.chrmap)?;
         ia.end()
     }
 }
 impl IndexedAnnotation {
-    fn from_gtf(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
-        IndexedAnnotation::from_file(annotfile, "gtf", gene_type, transcript_type)
+    fn from_gtf(annotfile: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
+        IndexedAnnotation::from_file(annotfile, "gtf", gene_type, transcript_type, chrmap_file)
     }
-    fn from_gff(annotfile: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
-        IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type)
+    fn from_gff(annotfile: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
+        IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type, chrmap_file)
     }
-    fn from_file(annotfile: &str, filetype: &str, gene_type: &str, transcript_type: &str) -> Result<IndexedAnnotation> {
+    fn from_file(annotfile: &str, filetype: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
+        // read in the optional chr map
+        let mut chrmap = HashMap::<Atom,Atom>::new();
+        if let Some(charmap_file) = chrmap_file.clone() {
+            let f = File::open(&charmap_file)?;
+            let file = BufReader::new(&f);
+            for line in file.lines() {
+                let line = line?;
+                let cols: Vec<&str> = line.split('\t').collect();
+                if let Some(key) = cols.get(0) {
+                    if let Some(value) = cols.get(1) {
+                        chrmap.insert(Atom::from(*key), Atom::from(*value));
+                    }
+                }
+            }
+        }
+        
         let mut id2row = HashMap::<Atom, usize>::new();
         let mut rows = Vec::<Record>::new();
         let f = File::open(&annotfile)?;
@@ -278,7 +300,7 @@ impl IndexedAnnotation {
         let name_atom = Atom::from("Name");
         for line in file.lines() {
             let row = rows.len();
-            if let Ok(record) = Record::from_row(row, &line?, filetype) {
+            if let Ok(record) = Record::from_row(row, &line?, filetype, &chrmap) {
                 if let Some(id) = record.attributes.get(&id_atom) {
                     id2row.insert(id.clone(), row);
                 }
@@ -294,6 +316,7 @@ impl IndexedAnnotation {
         let transcript_name_atom = Atom::from("transcript_name");
         let gene_id_atom = Atom::from("gene_id");
         let gene_name_atom = Atom::from("gene_name");
+        
         match filetype {
             "gtf" => {
                 let mut firstrow = HashMap::<&Record, usize>::new();
@@ -464,12 +487,14 @@ impl IndexedAnnotation {
             let mut t = tree.entry(record.seqname.clone()).or_insert_with(IntervalTree::new);
             t.insert(Interval::new((record.start - 1)..(record.end))?, row);
         }
+        
         Ok(IndexedAnnotation {
             rows: rows,
             id2row: id2row,
             row2children: row2children_update,
             row2parents: row2parents_update,
             tree: tree,
+            chrmap: chrmap,
         })
     }
     
@@ -693,7 +718,7 @@ impl IndexedAnnotation {
     
     fn to_bigbed(&self, 
         file: &str, 
-        refs: &LinkedHashMap<Atom,(u32,u32)>,
+        refs: &LinkedHashMap<Atom,u32>,
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String],
@@ -707,7 +732,7 @@ impl IndexedAnnotation {
         // write the genome file
         let genome_filename = format!("{}.bb.genome", file);
         {   let mut genome_fh = File::create(&genome_filename)?;
-            for (chr, &(_, length)) in refs {
+            for (chr, length) in refs {
                 writeln!(genome_fh, "{}\t{}", chr, length)?;
             }
         }
@@ -894,7 +919,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
 fn bed2bigbed(
     bed_file: &str, 
     bigbed_file: &str, 
-    refs: &LinkedHashMap<Atom,(u32,u32)>, 
+    refs: &LinkedHashMap<Atom,u32>, 
     sort_bed: bool,
     remove_bed: bool,
     trackdb: &mut BufWriter<Box<Write>>) 
@@ -903,7 +928,7 @@ fn bed2bigbed(
     // write the genome file
     let genome_filename = format!("{}.genome", bigbed_file);
     {   let mut genome_fh = File::create(&genome_filename)?;
-        for (chr, &(_, length)) in refs {
+        for (chr, length) in refs {
             writeln!(genome_fh, "{}\t{}", chr, length)?;
         }
     }
@@ -958,16 +983,17 @@ fn bed2bigbed(
     Ok(())
 }
 
-fn get_bam_refs(bamfile: &str) -> Result<LinkedHashMap<Atom,(u32,u32)>> {
-    let mut refs = LinkedHashMap::<Atom,(u32,u32)>::new();
+fn get_bam_refs(bamfile: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHashMap<Atom,u32>> {
+    let mut refs = LinkedHashMap::<Atom,u32>::new();
     let bam = IndexedReader::from_path(bamfile)?;
     let header = bam.header();
     let target_names = header.target_names();
     for target_name in target_names {
         let tid = header.tid(target_name).r()?;
         let target_len = header.target_len(tid).r()?;
-        let target_name = std::str::from_utf8(target_name)?;
-        refs.insert(Atom::from(target_name), (tid, target_len));
+        let target_name = Atom::from(std::str::from_utf8(target_name)?);
+        let chr = chrmap.get(&target_name).unwrap_or(&target_name);
+        refs.insert(chr.clone(), target_len);
     }
     Ok(refs)
 }
@@ -977,7 +1003,7 @@ fn reannotate_regions(
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
-    refs: &LinkedHashMap<Atom,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,u32>,
     options: &Options,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<ConstituitivePair>>
@@ -991,14 +1017,14 @@ fn reannotate_regions(
     let mut end_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
     let mut end_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
     // allocate the bigwig histograms
-    for (chr, &(_, length)) in refs {
+    for (chr, length) in refs {
         if options.debug_bigwig.is_some() {
-            plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
-            minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
-            start_plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
-            start_minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
-            end_plus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
-            end_minus_bw_histo.insert(chr.clone(), CsVec::empty(length as usize));
+            plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+            minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+            start_plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+            start_minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+            end_plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+            end_minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
         }
     }
     // store the refseq names and sizes
@@ -1008,7 +1034,7 @@ fn reannotate_regions(
         let exon2 = &annot.rows[pair.exon2_row];
         let start = annot.rows[pair.exon1_row].end;
         let end = annot.rows[pair.exon2_row].start-1;
-        let reflength = refs[&exon1.seqname].1;
+        let reflength = refs[&exon1.seqname];
         let mut histo = CsVecOwned::<u64>::empty(reflength as usize);
         let mut start_histo = CsVecOwned::<u64>::empty(reflength as usize);
         let mut end_histo = CsVecOwned::<u64>::empty(reflength as usize);
@@ -1021,23 +1047,32 @@ fn reannotate_regions(
             let read1strand = bamstrand[b];
             let mut bam = IndexedReader::from_path(bamfile)?;
             let chr = &annot.rows[pair.exon1_row].seqname;
-            if let Some(ref_) = refs.get(chr) {
-                let tid = ref_.0;
-                let strand = &annot.rows[pair.exon1_row].strand;
-                let strand_is_plus = strand == "+";
-                let mut bw_histogram = 
-                    if strand_is_plus { plus_bw_histo.get_mut(chr).r()? } 
-                    else { minus_bw_histo.get_mut(chr).r()? };
-                let mut start_bw_histogram = 
-                    if strand_is_plus { start_plus_bw_histo.get_mut(chr).r()? } 
-                    else { start_minus_bw_histo.get_mut(chr).r()? };
-                let mut end_bw_histogram = 
-                    if strand_is_plus { end_plus_bw_histo.get_mut(chr).r()? }
-                    else { end_minus_bw_histo.get_mut(chr).r()? };
-                
+            let strand = &annot.rows[pair.exon1_row].strand;
+            let strand_is_plus = strand == "+";
+            let mut bw_histogram = 
+                if strand_is_plus { plus_bw_histo.get_mut(chr).r()? } 
+                else { minus_bw_histo.get_mut(chr).r()? };
+            let mut start_bw_histogram = 
+                if strand_is_plus { start_plus_bw_histo.get_mut(chr).r()? } 
+                else { start_minus_bw_histo.get_mut(chr).r()? };
+            let mut end_bw_histogram = 
+                if strand_is_plus { end_plus_bw_histo.get_mut(chr).r()? }
+                else { end_minus_bw_histo.get_mut(chr).r()? };
+            
+            // build the tid map for this bam file
+            let mut tidmap = HashMap::<Atom,u32>::new();
+            {   let header = bam.header();
+                for target_name in header.target_names() {
+                    let tid = header.tid(target_name).r()?;
+                    let target_name = Atom::from(std::str::from_utf8(target_name)?);
+                    let chr = annot.chrmap.get(&target_name).unwrap_or(&target_name);
+                    tidmap.insert(chr.clone(), tid);
+                }
+            }
+            if let Some(tid) = tidmap.get(chr) {
                 // group reads by pairs
                 let mut read_pairs = HashMap::<Atom,Vec<Vec<Range<u64>>>>::new();
-                bam.seek(tid, start as u32, end as u32)?;
+                bam.seek(*tid, start as u32, end as u32)?;
                 for read in bam.records() {
                     let read = read?;
                     let read_name = Atom::from(str::from_utf8(read.qname())?);
@@ -1110,6 +1145,9 @@ fn reannotate_regions(
                         }
                     }
                 }
+            }
+            else {
+                writeln!(stderr(), "Could not map tid for chr {} in bam file {}, skipping!", chr, bamfile)?;
             }
         }
         // fill in the incompletes
@@ -1234,7 +1272,7 @@ fn reannotate_regions(
 fn write_bigwig(
     file: &str, 
     histogram: &HashMap<Atom,CsVecOwned<u64>>, 
-    refs: &LinkedHashMap<Atom,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,u32>,
     strand: &str,
     trackdb: &mut BufWriter<Box<Write>>,
     parent: &str,
@@ -1251,7 +1289,7 @@ fn write_bigwig(
         chrs.sort_by_key(|a| a.as_bytes());
         for chr in chrs {
             let histo = &histogram[chr];
-            let ref_length = refs[chr.into()].1 as usize;
+            let ref_length = refs[chr.into()] as usize;
             while start < ref_length {
                 while histo[end] == histo[start] && end < ref_length {
                     end += 1
@@ -1274,7 +1312,7 @@ fn write_bigwig(
     // write the genome file
     let genome_filename = format!("{}.{}.bw.genome", file, strand);
     {   let mut genome_fh = File::create(&genome_filename)?;
-        for (chr, &(_, length)) in refs {
+        for (chr, length) in refs {
             writeln!(genome_fh, "{}\t{}", chr, length)?;
         }
     }
@@ -1366,7 +1404,7 @@ fn compute_rpkm(
     total_reads: u64,
     debug_rpkm_region_bigbed: &Option<String>,
     debug_mapped_reads_bigbed: &Option<String>,
-    refs: &LinkedHashMap<Atom,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,u32>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<RpkmStats>> 
 {
@@ -1668,7 +1706,7 @@ fn write_exon_bigbed(
     pairs: &[ConstituitivePair], 
     annot: &IndexedAnnotation,
     file: &str, 
-    refs: &LinkedHashMap<Atom,(u32,u32)>,
+    refs: &LinkedHashMap<Atom,u32>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<()> 
 {
@@ -1773,24 +1811,24 @@ fn run() -> Result<()> {
         Options::clap().print_help()?;
         return Err("No bam files were passed in!".into());
     }
-    writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
-    let refs = get_bam_refs(&bamfiles[0])?;
-    
     let mrna_transcript_type = String::from("mRNA");
     let annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
         IndexedAnnotation::from_gff(&annotfile_gff, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type))?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), &options.chrmap_file)?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type))?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), &options.chrmap_file)?
     } else {
         Options::clap().print_help()?;
         return Err("No annotation file was given!".into());
     };
+    writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
+    let refs = get_bam_refs(&bamfiles[0], &annot.chrmap)?;
+    
     if let Some(debug_annot_gff) = options.debug_annot_gff.clone() {
         writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gff)?;
         annot.to_gff(&debug_annot_gff)?; 
