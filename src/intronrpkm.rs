@@ -730,7 +730,7 @@ impl IndexedAnnotation {
         self.to_bed(&bed_file, exon_types, cds_types, transcript_types)?;
         
         // write the genome file
-        let genome_filename = format!("{}.bb.genome", file);
+        let genome_filename = format!("{}.genome", file);
         {   let mut genome_fh = File::create(&genome_filename)?;
             for (chr, length) in refs {
                 writeln!(genome_fh, "{}\t{}", chr, length)?;
