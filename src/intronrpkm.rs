@@ -1768,6 +1768,7 @@ fn run() -> Result<()> {
     bamstrand.append(&mut options.bam.iter().map(|_| None).collect());
     // get the chromosome names and sizes from the first bam file
     if bamfiles.is_empty() {
+        Options::clap().print_help()?;
         return Err("No bam files were passed in!".into());
     }
     writeln!(stderr(), "Getting regseq lengths from bam file {:?}", &bamfiles[0])?;
@@ -1785,6 +1786,7 @@ fn run() -> Result<()> {
             options.gene_type.get(0).r()?, 
             options.transcript_type.get(0).unwrap_or(&mrna_transcript_type))?
     } else {
+        Options::clap().print_help()?;
         return Err("No annotation file was given!".into());
     };
     if let Some(debug_annot_gff) = options.debug_annot_gff.clone() {

@@ -17,6 +17,8 @@ extern crate error_chain;
 
 extern crate serde_json;
 
+extern crate structopt;
+
 pub mod errors {
     error_chain!{
         foreign_links {
@@ -32,6 +34,7 @@ pub mod errors {
             Interval(::bio::utils::IntervalError);
             Csv(::csv::Error);
             Json(::serde_json::Error);
+            StructOpt(::structopt::clap::Error);
         }
         errors {
             NoneError
