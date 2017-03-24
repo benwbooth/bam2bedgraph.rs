@@ -1245,32 +1245,46 @@ fn reannotate_regions(
                             for (i, exon) in exons.iter().enumerate() {
                                 // write start/stop histograms
                                 if i > 0 {
-                                    start_histo[exon.start as usize - start] += 1;
+                                    if start <= (exon.start as usize) && (exon.start as usize) < end {
+                                        start_histo[exon.start as usize - start] += 1;
+                                    }
                                 }
                                 if i < exons.len()-1 {
-                                    end_histo[exon.end as usize - start] += 1;
+                                    if start <= (exon.end as usize) && (exon.end as usize) < end {
+                                        end_histo[exon.end as usize - start] += 1;
+                                    }    
                                 }
                                 if options.debug_bigwig.is_some() {
                                     if i > 0 {
-                                        *start_bw_histogram.entry(exon.start as usize).or_insert(0i32) += 1;
+                                        if start <= (exon.start as usize) && (exon.start as usize) < end {
+                                            *start_bw_histogram.entry(exon.start as usize).or_insert(0i32) += 1;
+                                        }
                                     }
                                     if i < exons.len()-1 {
-                                        *end_bw_histogram.entry(exon.end as usize).or_insert(0i32) += 1;
+                                        if start <= (exon.end as usize) && (exon.end as usize) < end {
+                                            *end_bw_histogram.entry(exon.end as usize).or_insert(0i32) += 1;
+                                        }
                                     }
                                 }
                                 
                                 // write the exon_regions histogram
                                 if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
                                     for pos in exon.start..exon.end {
-                                        exon_regions[pos as usize - start] += 1;
+                                        if start <= (pos as usize) && (pos as usize) < end {
+                                            exon_regions[pos as usize - start] += 1;
+                                        }
                                     }
                                 }
                                 // write incomplete starts/ends histograms
                                 if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
-                                    incomplete_ends[exon.end as usize - start] += 1;
+                                    if start <= (exon.end as usize) && (exon.end as usize) < end {
+                                        incomplete_ends[exon.end as usize - start] += 1;
+                                    }
                                 }
                                 if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
-                                    incomplete_starts[(exon.start as usize) - start] += 1;
+                                    if start <= (exon.start as usize) && (exon.start as usize) < end {
+                                        incomplete_starts[(exon.start as usize) - start] += 1;
+                                    }
                                 }
                             }
                         }
