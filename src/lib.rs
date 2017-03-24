@@ -1,5 +1,4 @@
 #![recursion_limit = "1024"]
-use std::str;
 use std::vec::Vec;
 use std::ops::Range;
 
@@ -63,19 +62,21 @@ pub fn cigar2exons(cigar: &[Cigar], pos: u64) -> Result<Vec<Range<u64>>> {
             &Cigar::Match(length) => {
                 pos += length as u64;
                 exons.push(Range{start: pos - length as u64, end: pos});
-                Ok(())
             }
             &Cigar::RefSkip(length) |
-            &Cigar::Del(length) => {
+            &Cigar::Del(length) |
+            &Cigar::Equal(length) |
+            &Cigar::Diff(length) => {
                 pos += length as u64;
-                Ok(())
+            }
+            &Cigar::Back(length) => {
+                pos -= length as u64;
             }
             &Cigar::Ins(_) |
             &Cigar::SoftClip(_) |
             &Cigar::HardClip(_) |
-            &Cigar::Pad(_) => Ok(()),
-            c => Err(format!("Bad CIGAR string: {:?}", c)),
-        }?;
+            &Cigar::Pad(_) => (),
+        };
     }
     Ok(exons)
 }

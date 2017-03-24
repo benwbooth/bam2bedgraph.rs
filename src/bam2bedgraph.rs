@@ -261,7 +261,7 @@ fn analyze_bam(options: &Options,
         }
 
         let mut exons: Vec<Range<u64>> = Vec::new();
-        let mut get_exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+        let mut get_exons = cigar2exons(&read.cigar(), (read.pos()-1) as u64)?;
         if !options.split_exons && !get_exons.is_empty() {
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
@@ -551,7 +551,7 @@ fn run() -> Result<()> {
                 interval_lists.insert(chr.clone(), Vec::new());
             }
 
-            let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+            let exons = cigar2exons(&read.cigar(), (read.pos()-1) as u64)?;
             let interval_list = interval_lists.get_mut(&chr).r()?;
             for exon in exons {
                 interval_list.push((Interval::new(exon)?,

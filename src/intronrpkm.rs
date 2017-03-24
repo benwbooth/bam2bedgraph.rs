@@ -1139,21 +1139,21 @@ fn reannotate_regions(
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
     // bigwig histograms
-    let mut plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
-    let mut minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
-    let mut start_plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
-    let mut start_minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
-    let mut end_plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
-    let mut end_minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut start_plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut start_minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut end_plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut end_minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
     // allocate the bigwig histograms
     if options.debug_bigwig.is_some() {
-        for (chr, length) in &annot.refs {
-            plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
-            minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
-            start_plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
-            start_minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
-            end_plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
-            end_minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+        for (chr, _) in &annot.refs {
+            plus_bw_histo.insert(chr.clone(), HashMap::new());
+            minus_bw_histo.insert(chr.clone(), HashMap::new());
+            start_plus_bw_histo.insert(chr.clone(), HashMap::new());
+            start_minus_bw_histo.insert(chr.clone(), HashMap::new());
+            end_plus_bw_histo.insert(chr.clone(), HashMap::new());
+            end_minus_bw_histo.insert(chr.clone(), HashMap::new());
         }
     }
     // store the refseq names and sizes
@@ -1211,7 +1211,7 @@ fn reannotate_regions(
                             continue;
                         }
                     }
-                    let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+                    let exons = cigar2exons(&read.cigar(), (read.pos()-1) as u64)?;
                     read_pairs.entry(read_name).or_insert_with(Vec::new).push(exons);
                 }
                 for (read_name,read_pair) in read_pairs {
@@ -1231,7 +1231,7 @@ fn reannotate_regions(
                             mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
                             for pos in exon.start..exon.end {
                                 histo[pos as usize - start] += 1;
-                                bw_histogram[pos as usize] += 1;
+                                *bw_histogram.entry(pos as usize).or_insert(0i32) += 1;
                             }
                         }
                         
@@ -1250,10 +1250,10 @@ fn reannotate_regions(
                                 }
                                 if options.debug_bigwig.is_some() {
                                     if i > 0 {
-                                        start_bw_histogram[exon.start as usize] += 1;
+                                        *start_bw_histogram.entry(exon.start as usize).or_insert(0i32) += 1;
                                     }
                                     if i < exons.len()-1 {
-                                        end_bw_histogram[exon.end as usize] += 1;
+                                        *end_bw_histogram.entry(exon.end as usize).or_insert(0i32) += 1;
                                     }
                                 }
                                 
@@ -1409,7 +1409,7 @@ fn reannotate_regions(
 
 fn write_bigwig(
     file: &str, 
-    histogram: &HashMap<Atom,Vec<i32>>, 
+    histogram: &HashMap<Atom,HashMap<usize,i32>>, 
     refs: &LinkedHashMap<Atom,u64>,
     vizchrmap: &HashMap<Atom,Atom>,
     strand: &str,
@@ -1424,11 +1424,15 @@ fn write_bigwig(
         // sort the chrs by ascii values. This is required by bedGraphToBigWig
         let mut chrs = histogram.keys().map(|c| (c, vizchrmap.get(c).unwrap_or(c))).collect::<Vec<_>>();
         chrs.sort_by_key(|a| a.1.as_bytes());
+        let zero = 0i32;
         for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
+            let reflength = refs[vizchr] as usize;
             let mut start = 0usize;
-            for (i,value) in histo.iter().enumerate() {
-                if *value != histo[start] {
+            let mut start_value = histo.get(&start).unwrap_or(&zero);
+            for i in 0usize..reflength {
+                let value = histo.get(&i).unwrap_or(&zero);
+                if value != start_value {
                     if *value > 0i32 {
                         if strand == "-" {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
@@ -1440,6 +1444,7 @@ fn write_bigwig(
                         }
                     }
                     start = i;
+                    start_value = histo.get(&start).unwrap_or(&zero);
                 }
             }
         }
