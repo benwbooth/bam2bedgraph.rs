@@ -55,9 +55,6 @@ extern crate serde_json;
 extern crate itertools;
 use itertools::Itertools;
 
-extern crate sprs;
-use sprs::{CsVec, CsVecOwned};
-
 extern crate string_cache;
 use string_cache::DefaultAtom as Atom;
 
@@ -1142,21 +1139,21 @@ fn reannotate_regions(
 {
     let mut reannotated = Vec::<ConstituitivePair>::new();
     // bigwig histograms
-    let mut plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
-    let mut minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
-    let mut start_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
-    let mut start_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
-    let mut end_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
-    let mut end_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
+    let mut plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut start_plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut start_minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut end_plus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
+    let mut end_minus_bw_histo = HashMap::<Atom,Vec<i32>>::new();
     // allocate the bigwig histograms
-    for (chr, length) in &annot.refs {
-        if options.debug_bigwig.is_some() {
-            plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
-            minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
-            start_plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
-            start_minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
-            end_plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
-            end_minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
+    if options.debug_bigwig.is_some() {
+        for (chr, length) in &annot.refs {
+            plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+            minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+            start_plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+            start_minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+            end_plus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
+            end_minus_bw_histo.insert(chr.clone(), vec![0i32; *length as usize]);
         }
     }
     // store the refseq names and sizes
@@ -1164,15 +1161,15 @@ fn reannotate_regions(
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let start = annot.rows[pair.exon1_row].end;
-        let end = annot.rows[pair.exon2_row].start-1;
-        let reflength = annot.refs[&exon1.seqname];
-        let mut histo = CsVecOwned::<u64>::empty(reflength as usize);
-        let mut start_histo = CsVecOwned::<u64>::empty(reflength as usize);
-        let mut end_histo = CsVecOwned::<u64>::empty(reflength as usize);
-        let mut exon_regions = CsVecOwned::<u64>::empty(reflength as usize);
-        let mut incomplete_starts = CsVecOwned::<u64>::empty(reflength as usize);
-        let mut incomplete_ends = CsVecOwned::<u64>::empty(reflength as usize);
+        let start = annot.rows[pair.exon1_row].end as usize;
+        let end = (annot.rows[pair.exon2_row].start-1) as usize;
+        let region_size = end-start;
+        let mut histo = vec![0i32; region_size];
+        let mut start_histo = vec![0i32; region_size];
+        let mut end_histo = vec![0i32; region_size];
+        let mut exon_regions = vec![0i32; region_size];
+        let mut incomplete_starts = vec![0i32; region_size];
+        let mut incomplete_ends = vec![0i32; region_size];
         let mut mapped_reads = IntervalTree::<u64, Atom>::new();
         let mut cassettes = Vec::<Cassette>::new();
         for (b, bamfile) in bamfiles.iter().enumerate() {
@@ -1233,7 +1230,7 @@ fn reannotate_regions(
                         for exon in exons {
                             mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
                             for pos in exon.start..exon.end {
-                                histo[pos as usize] += 1;
+                                histo[pos as usize - start] += 1;
                                 bw_histogram[pos as usize] += 1;
                             }
                         }
@@ -1246,10 +1243,10 @@ fn reannotate_regions(
                             for (i, exon) in exons.iter().enumerate() {
                                 // write start/stop histograms
                                 if i > 0 {
-                                    start_histo[exon.start as usize] += 1;
+                                    start_histo[exon.start as usize - start] += 1;
                                 }
                                 if i < exons.len()-1 {
-                                    end_histo[exon.end as usize] += 1;
+                                    end_histo[exon.end as usize - start] += 1;
                                 }
                                 if options.debug_bigwig.is_some() {
                                     if i > 0 {
@@ -1261,17 +1258,17 @@ fn reannotate_regions(
                                 }
                                 
                                 // write the exon_regions histogram
-                                if i > 0 && i < exons.len()-1 && start < exon.start && exon.end < end {
+                                if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
                                     for pos in exon.start..exon.end {
-                                        exon_regions[pos as usize] += 1;
+                                        exon_regions[pos as usize - start] += 1;
                                     }
                                 }
                                 // write incomplete starts/ends histograms
-                                if i == 0 && start < exon.end && exon.end < end {
-                                    incomplete_ends[exon.end as usize] += 1;
+                                if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
+                                    incomplete_ends[exon.end as usize - start] += 1;
                                 }
-                                if i == exons.len()-1 && start < exon.start && exon.start < end {
-                                    incomplete_starts[exon.start as usize] += 1;
+                                if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
+                                    incomplete_starts[(exon.start as usize) - start] += 1;
                                 }
                             }
                         }
@@ -1284,31 +1281,37 @@ fn reannotate_regions(
         }
         // fill in the incompletes
         if options.fill_incomplete_exons {
-            for (i, _) in incomplete_starts.iter() {
-                let mut last_end = None;
-                for j in i..end as usize {
-                    if end_histo.get(j).is_some() {
-                        last_end = Some(j);
+            for (i,value) in incomplete_starts.iter().enumerate() {
+                if *value > 0i32 {
+                    let i = i+start;
+                    let mut last_end = None;
+                    for j in i..end as usize {
+                        if end_histo.get(j-start).is_some() {
+                            last_end = Some(j);
+                        }
+                        if histo.get(j-start as usize).is_none() { break }
                     }
-                    if histo.get(j).is_none() { break }
-                }
-                if let Some(last_end) = last_end {
-                    for pos in i..last_end {
-                        exon_regions[pos as usize] += 1;
+                    if let Some(last_end) = last_end {
+                        for pos in i..last_end {
+                            exon_regions[(pos-start) as usize] += 1;
+                        }
                     }
                 }
             }
-            for (i, _) in incomplete_ends.iter() {
-                let mut last_start = None;
-                for j in (start as usize..i-1).rev() {
-                    if start_histo.get(j).is_some() {
-                        last_start = Some(j);
+            for (i,value) in incomplete_ends.iter().enumerate() {
+                if *value > 0i32 {
+                    let i = i+start;
+                    let mut last_start = None;
+                    for j in (start as usize..i-1).rev() {
+                        if start_histo.get(j-start).is_some() {
+                            last_start = Some(j);
+                        }
+                        if j == 0 || histo.get((j-1)-start).is_none() { break }
                     }
-                    if j == 0 || histo.get(j-1).is_none() { break }
-                }
-                if let Some(last_start) = last_start {
-                    for pos in last_start..i {
-                        exon_regions[pos as usize] += 1;
+                    if let Some(last_start) = last_start {
+                        for pos in last_start..i {
+                            exon_regions[(pos-start) as usize] += 1;
+                        }
                     }
                 }
             }
@@ -1318,51 +1321,50 @@ fn reannotate_regions(
             static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
         }
         let caps = MAX_SLIPPAGE.captures(&options.max_slippage).r()?;
-        let max_slippage = caps.get(1).r()?.as_str().parse::<u64>()?;
-        let mut exon_start = 0u64;
-        let mut prev_i = std::usize::MAX;
-        for (i, _) in exon_regions.iter() {
-            if i-1 != prev_i {
-                if prev_i != std::usize::MAX {
-                    let exon_end = prev_i as u64;
+        let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
+        let mut exon_start = start;
+        for (i, value) in exon_regions.iter().enumerate() {
+            if *value != exon_regions[exon_start-start] {
+                if *value > 0i32 {
+                    let exon_end = i;
                     let max_slippage = if caps.get(2).is_some() 
-                        { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as u64 }
+                        { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
                         else { max_slippage };
                     // find histogram peaks of the start and end
-                    let mut max = 0u64;
+                    let mut max = 0i32;
                     let mut reannot_exon_start = exon_start;
                     for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
-                        if let Some(val) = start_histo.get(j as usize) {
+                        if let Some(val) = start_histo.get((j-start) as usize) {
                             if max < *val {  
                                 max = *val;
                                 reannot_exon_start = j;
                             }
                         }
                     }
-                    let mut max = 0u64;
+                    let mut max = 0i32;
                     let mut reannot_exon_end = exon_end;
                     for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
-                        if let Some(val) = end_histo.get(j as usize) {
+                        if let Some(val) = end_histo.get((j-start) as usize) {
                             if max < *val {
                                 max = *val;
                                 reannot_exon_end = j;
                             }
                         }
                     }
-                    let mut max = 0u64;
+                    let mut max = 0i32;
                     let mut reannot_exon_end2 = exon_end;
                     for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
-                        if let Some(val) = end_histo.get(j as usize) {
+                        if let Some(val) = end_histo.get((j-start) as usize) {
                             if max < *val {
                                 max = *val;
                                 reannot_exon_end2 = j;
                             }
                         }
                     }
-                    let mut max = 0u64;
+                    let mut max = 0i32;
                     let mut reannot_exon_start2 = exon_start;
                     for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
-                        if let Some(val) = start_histo.get(j as usize) {
+                        if let Some(val) = start_histo.get((j-start) as usize) {
                             if max < *val {  
                                 max = *val;
                                 reannot_exon_start2 = j;
@@ -1375,13 +1377,12 @@ fn reannotate_regions(
                         else {(reannot_exon_start, reannot_exon_end)};
                     // store the reannotated cassette exon
                     cassettes.push(Cassette {
-                        range: exon_start..exon_end,
+                        range: exon_start as u64..exon_end as u64,
                         cassette_row: None,
                     });
                 }
-                exon_start = i as u64;
+                exon_start = i+start;
             }
-            prev_i = i;
         }
         reannotated.push(ConstituitivePair {
             exon1_row: pair.exon1_row,
@@ -1408,7 +1409,7 @@ fn reannotate_regions(
 
 fn write_bigwig(
     file: &str, 
-    histogram: &HashMap<Atom,CsVecOwned<u64>>, 
+    histogram: &HashMap<Atom,Vec<i32>>, 
     refs: &LinkedHashMap<Atom,u64>,
     vizchrmap: &HashMap<Atom,Atom>,
     strand: &str,
@@ -1425,25 +1426,21 @@ fn write_bigwig(
         chrs.sort_by_key(|a| a.1.as_bytes());
         for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
-            let ref_length = refs[chr] as usize;
-            let mut start = std::usize::MAX;
-            let mut prev_i = std::usize::MAX;
-            for (i, value) in histo.iter() {
-                if prev_i == std::usize::MAX || prev_i != i-1 || *value != histo[start] {
-                    if start != std::usize::MAX {
+            let mut start = 0usize;
+            for (i,value) in histo.iter().enumerate() {
+                if *value != histo[start] {
+                    if *value > 0i32 {
                         if strand == "-" {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, prev_i, -(histo[start] as i64))?;
+                                     vizchr, start, i, -(*value as i64))?;
                         }
                         else {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, prev_i, histo[start])?;
+                                     vizchr, start, i, *value)?;
                         }
                     }
                     start = i;
                 }
-                if i >= ref_length { break };
-                prev_i = i;
             }
         }
     }
