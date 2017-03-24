@@ -1322,7 +1322,7 @@ fn reannotate_regions(
                         if start_histo.get(j-start).is_some() {
                             last_start = Some(j);
                         }
-                        if j == 0 || histo.get((j-1)-start).is_none() { break }
+                        if j == start || histo.get((j-1)-start).is_none() { break }
                     }
                     if let Some(last_start) = last_start {
                         for pos in last_start..i {
