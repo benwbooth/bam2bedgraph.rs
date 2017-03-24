@@ -1388,29 +1388,30 @@ fn write_bigwig(
     // write the bedgraph file
     let bedgraph_file = format!("{}.{}.bedgraph", file, strand);
     {   let mut bw = BufWriter::new(File::create(&bedgraph_file)?);
-        let mut start: usize = 0;
-        let mut end: usize = 0;
         // sort the chrs by ascii values. This is required by bedGraphToBigWig
         let mut chrs = histogram.keys().map(|c| (c, vizchrmap.get(c).unwrap_or(c))).collect::<Vec<_>>();
         chrs.sort_by_key(|a| a.1.as_bytes());
         for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
-            let ref_length = refs[chr.into()] as usize;
-            while start < ref_length {
-                while histo[end] == histo[start] && end < ref_length {
-                    end += 1
-                }
-                if histo[start] > 0 {
-                    if strand == "-" {
-                        writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                 vizchr, start, end, -(histo[start] as i64))?;
+            let ref_length = refs[chr] as usize;
+            let mut start = std::usize::MAX;
+            let mut prev_i = std::usize::MAX;
+            for (i, value) in histo.iter() {
+                if prev_i == std::usize::MAX || prev_i != i-1 || *value != histo[start] {
+                    if start != std::usize::MAX {
+                        if strand == "-" {
+                            writeln!(bw, "{}\t{}\t{}\t{}\n",
+                                     vizchr, start, prev_i, -(histo[start] as i64))?;
+                        }
+                        else {
+                            writeln!(bw, "{}\t{}\t{}\t{}\n",
+                                     vizchr, start, prev_i, histo[start])?;
+                        }
                     }
-                    else {
-                        writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                 vizchr, start, end, histo[start])?;
-                    }
+                    start = i;
                 }
-                start = end;
+                if i >= ref_length { break };
+                prev_i = i;
             }
         }
     }
