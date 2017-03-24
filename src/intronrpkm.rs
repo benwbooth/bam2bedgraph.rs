@@ -1230,8 +1230,10 @@ fn reannotate_regions(
                         for exon in exons {
                             mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
                             for pos in exon.start..exon.end {
-                                histo[pos as usize - start] += 1;
-                                *bw_histogram.entry(pos as usize).or_insert(0i32) += 1;
+                                if start <= (pos as usize) && (pos as usize) < end {
+                                    histo[pos as usize - start] += 1;
+                                    *bw_histogram.entry(pos as usize).or_insert(0i32) += 1;
+                                }
                             }
                         }
                         
