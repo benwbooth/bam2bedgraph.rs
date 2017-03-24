@@ -77,6 +77,10 @@ struct Options {
     bam: Vec<String>,
     #[structopt(long="chrmap", help = "Optional tab-delimited chr name mapping file", name="CHRMAP_FILE")]
     chrmap_file: Option<String>,
+    #[structopt(long="vizchrmap", help = "Optional tab-delimited chr name mapping file for bigwig/bigbed exports", name="VIZCHRMAP_FILE")]
+    vizchrmap_file: Option<String>,
+    #[structopt(long="sizes", help = "Optional chr sizes file", name="SIZES_FILE")]
+    sizes_file: Option<String>,
     // output file
     #[structopt(long="out", short="o", help = "Output file", name="OUT_FILE", default_value="-")]
     outfile: String,
@@ -244,6 +248,8 @@ struct IndexedAnnotation {
     row2children: HashMap<usize, Vec<usize>>,
     tree: HashMap<Atom, IntervalTree<u64, usize>>,
     chrmap: HashMap<Atom, Atom>,
+    vizchrmap: HashMap<Atom, Atom>,
+    refs: LinkedHashMap<Atom, u64>,
 }
 impl serde::Serialize for IndexedAnnotation
 {
@@ -265,17 +271,41 @@ impl serde::Serialize for IndexedAnnotation
         }
         ia.serialize_field("tree", &tree)?;
         ia.serialize_field("chrmap", &self.chrmap)?;
+        ia.serialize_field("vizchrmap", &self.chrmap)?;
+        ia.serialize_field("refs", &self.refs)?;
         ia.end()
     }
 }
 impl IndexedAnnotation {
-    fn from_gtf(annotfile: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
-        IndexedAnnotation::from_file(annotfile, "gtf", gene_type, transcript_type, chrmap_file)
+    fn from_gtf(
+        annotfile: &str, 
+        gene_type: &str, 
+        transcript_type: &str,
+        chrmap_file: &Option<String>,
+        vizchrmap_file: &Option<String>) 
+        -> Result<IndexedAnnotation> 
+    {
+        IndexedAnnotation::from_file(annotfile, "gtf", gene_type, transcript_type, chrmap_file, vizchrmap_file)
     }
-    fn from_gff(annotfile: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
-        IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type, chrmap_file)
+    fn from_gff(
+        annotfile: &str, 
+        gene_type: &str, 
+        transcript_type: &str, 
+        chrmap_file: &Option<String>,
+        vizchrmap_file: &Option<String>) 
+        -> Result<IndexedAnnotation> 
+    {
+        IndexedAnnotation::from_file(annotfile, "gff", gene_type, transcript_type, chrmap_file, vizchrmap_file)
     }
-    fn from_file(annotfile: &str, filetype: &str, gene_type: &str, transcript_type: &str, chrmap_file: &Option<String>) -> Result<IndexedAnnotation> {
+    fn from_file(
+        annotfile: &str, 
+        filetype: &str, 
+        gene_type: &str, 
+        transcript_type: &str, 
+        chrmap_file: &Option<String>,
+        vizchrmap_file: &Option<String>) 
+        -> Result<IndexedAnnotation> 
+    {
         // read in the optional chr map
         let mut chrmap = HashMap::<Atom,Atom>::new();
         if let Some(charmap_file) = chrmap_file.clone() {
@@ -291,6 +321,21 @@ impl IndexedAnnotation {
                 }
             }
         }
+        // read in the optional visualization chr map
+        let mut vizchrmap = HashMap::<Atom,Atom>::new();
+        if let Some(vizcharmap_file) = vizchrmap_file.clone() {
+            let f = File::open(&vizcharmap_file)?;
+            let file = BufReader::new(&f);
+            for line in file.lines() {
+                let line = line?;
+                let cols: Vec<&str> = line.split('\t').collect();
+                if let Some(key) = cols.get(0) {
+                    if let Some(value) = cols.get(1) {
+                        vizchrmap.insert(Atom::from(*key), Atom::from(*value));
+                    }
+                }
+            }
+        }
         
         let mut id2row = HashMap::<Atom, usize>::new();
         let mut rows = Vec::<Record>::new();
@@ -298,15 +343,27 @@ impl IndexedAnnotation {
         let file = BufReader::new(&f);
         let id_atom = Atom::from("ID");
         let name_atom = Atom::from("Name");
+        let mut refs = HashMap::<Atom,u64>::new();
         for line in file.lines() {
             let row = rows.len();
             if let Ok(record) = Record::from_row(row, &line?, filetype, &chrmap) {
                 if let Some(id) = record.attributes.get(&id_atom) {
                     id2row.insert(id.clone(), row);
                 }
+                // get the max ref lengths
+                let mut reflength = refs.entry(record.seqname.clone()).or_insert(record.end);
+                if *reflength < record.end { *reflength = record.end }
                 rows.push(record);
             }
         }
+        // sort the refs
+        let mut sorted_refs = LinkedHashMap::<Atom,u64>::new();
+        let chrs = refs.keys().collect::<Vec<_>>();
+        for chr in chrs {
+            let length = refs[chr];
+            sorted_refs.insert(chr.clone(), length);
+        }
+        
         // populate row2parents and row2children indices
         let mut row2parents = HashMap::<usize, BTreeSet<usize>>::new();
         let mut row2children = HashMap::<usize, BTreeSet<usize>>::new();
@@ -495,6 +552,8 @@ impl IndexedAnnotation {
             row2parents: row2parents_update,
             tree: tree,
             chrmap: chrmap,
+            vizchrmap: vizchrmap,
+            refs: sorted_refs,
         })
     }
     
@@ -692,9 +751,10 @@ impl IndexedAnnotation {
                                 }
                                 transcript_names.insert(transcript_name.clone());
                                 
+                                let chr = self.vizchrmap.get(&transcript.seqname).unwrap_or(&transcript.seqname);
                                 // write the bed line
                                 let line = &[
-                                    transcript.seqname.as_ref(),
+                                    chr.as_ref(),
                                     &start.to_string(),
                                     &end.to_string(),
                                     &transcript_name,
@@ -732,7 +792,6 @@ impl IndexedAnnotation {
     
     fn to_bigbed(&self, 
         file: &str, 
-        refs: &LinkedHashMap<Atom,u32>,
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String],
@@ -746,7 +805,8 @@ impl IndexedAnnotation {
         // write the genome file
         let genome_filename = format!("{}.genome", file);
         {   let mut genome_fh = File::create(&genome_filename)?;
-            for (chr, length) in refs {
+            for (chr, length) in &self.refs {
+                let chr = self.vizchrmap.get(chr).unwrap_or(chr);
                 writeln!(genome_fh, "{}\t{}", chr, length)?;
             }
         }
@@ -933,7 +993,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
 fn bed2bigbed(
     bed_file: &str, 
     bigbed_file: &str, 
-    refs: &LinkedHashMap<Atom,u32>, 
+    refs: &LinkedHashMap<Atom,u64>, 
     sort_bed: bool,
     remove_bed: bool,
     trackdb: &mut BufWriter<Box<Write>>) 
@@ -997,14 +1057,41 @@ fn bed2bigbed(
     Ok(())
 }
 
-fn get_bam_refs(bamfile: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHashMap<Atom,u32>> {
-    let mut refs = LinkedHashMap::<Atom,u32>::new();
+fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHashMap<Atom,u64>> {
+    let mut refs = HashMap::<Atom,u64>::new();
+    let f = File::open(&sizes_file)?;
+    let file = BufReader::new(&f);
+    for line in file.lines() {
+        let line = line?;
+        let cols: Vec<&str> = line.split('\t').collect();
+        if let Some(chr) = cols.get(0) {
+            let chr = Atom::from(*chr);
+            let chr = chrmap.get(&chr).unwrap_or(&chr);
+            if let Some(size) = cols.get(1) {
+                let size = size.parse::<u64>()?;
+                refs.insert(chr.clone(), size);
+            }
+        }
+    }
+    let mut chrs = refs.keys().collect::<Vec<_>>();
+    chrs.sort_by_key(|a| a.as_bytes());
+    let mut sorted_refs = LinkedHashMap::<Atom,u64>::new();
+    for chr in chrs {
+        let size = refs[chr];
+        sorted_refs.insert(chr.clone(), size);
+    }
+    Ok(sorted_refs)
+}
+
+
+fn get_bam_refs(bamfile: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHashMap<Atom,u64>> {
+    let mut refs = LinkedHashMap::<Atom,u64>::new();
     let bam = IndexedReader::from_path(bamfile)?;
     let header = bam.header();
     let target_names = header.target_names();
     for target_name in target_names {
         let tid = header.tid(target_name).r()?;
-        let target_len = header.target_len(tid).r()?;
+        let target_len = header.target_len(tid).r()? as u64;
         let target_name = Atom::from(std::str::from_utf8(target_name)?);
         let chr = chrmap.get(&target_name).unwrap_or(&target_name);
         refs.insert(chr.clone(), target_len);
@@ -1017,7 +1104,6 @@ fn reannotate_regions(
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
-    refs: &LinkedHashMap<Atom,u32>,
     options: &Options,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<ConstituitivePair>>
@@ -1031,7 +1117,7 @@ fn reannotate_regions(
     let mut end_plus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
     let mut end_minus_bw_histo = HashMap::<Atom,CsVecOwned<u64>>::new();
     // allocate the bigwig histograms
-    for (chr, length) in refs {
+    for (chr, length) in &annot.refs {
         if options.debug_bigwig.is_some() {
             plus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
             minus_bw_histo.insert(chr.clone(), CsVec::empty(*length as usize));
@@ -1048,7 +1134,7 @@ fn reannotate_regions(
         let exon2 = &annot.rows[pair.exon2_row];
         let start = annot.rows[pair.exon1_row].end;
         let end = annot.rows[pair.exon2_row].start-1;
-        let reflength = refs[&exon1.seqname];
+        let reflength = annot.refs[&exon1.seqname];
         let mut histo = CsVecOwned::<u64>::empty(reflength as usize);
         let mut start_histo = CsVecOwned::<u64>::empty(reflength as usize);
         let mut end_histo = CsVecOwned::<u64>::empty(reflength as usize);
@@ -1275,12 +1361,15 @@ fn reannotate_regions(
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", true)?;
-        write_bigwig(&start_prefix, &start_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&end_prefix, &end_plus_bw_histo, refs, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", true)?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", false)?;
-        write_bigwig(&end_prefix, &end_minus_bw_histo, refs, "-", trackdb, "debug_bigwig_-", false)?;
+        let vizrefs = annot.refs.iter().
+            map(|(k,v)| (annot.vizchrmap.get(k).unwrap_or(k).clone(), *v)).
+            collect::<LinkedHashMap<Atom,u64>>();
+        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", true)?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
+        write_bigwig(&end_prefix, &end_plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", true)?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, &vizrefs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
+        write_bigwig(&end_prefix, &end_minus_bw_histo, &vizrefs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
     }
     Ok(reannotated)
 }
@@ -1288,7 +1377,8 @@ fn reannotate_regions(
 fn write_bigwig(
     file: &str, 
     histogram: &HashMap<Atom,CsVecOwned<u64>>, 
-    refs: &LinkedHashMap<Atom,u32>,
+    refs: &LinkedHashMap<Atom,u64>,
+    vizchrmap: &HashMap<Atom,Atom>,
     strand: &str,
     trackdb: &mut BufWriter<Box<Write>>,
     parent: &str,
@@ -1300,10 +1390,10 @@ fn write_bigwig(
     {   let mut bw = BufWriter::new(File::create(&bedgraph_file)?);
         let mut start: usize = 0;
         let mut end: usize = 0;
-        let mut chrs: Vec<_> = histogram.keys().collect();
         // sort the chrs by ascii values. This is required by bedGraphToBigWig
-        chrs.sort_by_key(|a| a.as_bytes());
-        for chr in chrs {
+        let mut chrs = histogram.keys().map(|c| (c, vizchrmap.get(c).unwrap_or(c))).collect::<Vec<_>>();
+        chrs.sort_by_key(|a| a.1.as_bytes());
+        for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
             let ref_length = refs[chr.into()] as usize;
             while start < ref_length {
@@ -1313,11 +1403,11 @@ fn write_bigwig(
                 if histo[start] > 0 {
                     if strand == "-" {
                         writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                 chr, start, end, -(histo[start] as i64))?;
+                                 vizchr, start, end, -(histo[start] as i64))?;
                     }
                     else {
                         writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                 chr, start, end, histo[start])?;
+                                 vizchr, start, end, histo[start])?;
                     }
                 }
                 start = end;
@@ -1420,7 +1510,6 @@ fn compute_rpkm(
     total_reads: u64,
     debug_rpkm_region_bigbed: &Option<String>,
     debug_mapped_reads_bigbed: &Option<String>,
-    refs: &LinkedHashMap<Atom,u32>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<RpkmStats>> 
 {
@@ -1460,6 +1549,8 @@ fn compute_rpkm(
                     }
                 }
             }
+            let chr = &annot.rows[pair.exon1_row].seqname;
+            let chr = annot.vizchrmap.get(&chr).unwrap_or(&chr);
             // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
             for gene_row in &gene_parents {
                 let mapped_reads = &pair.mapped_reads;
@@ -1548,7 +1639,7 @@ fn compute_rpkm(
                         else { (cassette_features[0].0.start..cassette_features[0].0.start, 0f64) };
                     
                     region_bb.write_fmt(format_args!("{}\n", [
-                        annot.rows[pair.exon1_row].seqname.as_ref(),
+                        chr.as_ref(),
                         &cassette_features[0].0.start.to_string(),
                         &cassette_features[cassette_features.len()-1].0.end.to_string(),
                         &cassette_name,
@@ -1567,7 +1658,7 @@ fn compute_rpkm(
                 let intron_name = format!("{}.introns", pair_name);
                 let intron_color = [0,0,255];
                 region_bb.write_fmt(format_args!("{}\n", [
-                    annot.rows[pair.exon1_row].seqname.as_ref(),
+                    chr.as_ref(),
                     &intron_features[0].start.to_string(),
                     &intron_features[intron_features.len()-1].end.to_string(),
                     &intron_name,
@@ -1588,7 +1679,7 @@ fn compute_rpkm(
                         seen_read.insert(read_name.clone());
                         ranges.sort_by_key(|e| e.start);
                         reads_bb.write_fmt(format_args!("{}\n", [
-                            annot.rows[pair.exon1_row].seqname.as_ref(),
+                            chr.as_ref(),
                             &ranges[0].start.to_string(),
                             &ranges[ranges.len()-1].end.to_string(),
                             &read_name,
@@ -1610,7 +1701,7 @@ fn compute_rpkm(
                         seen_read.insert(read_name.clone());
                         ranges.sort_by_key(|e| e.start);
                         reads_bb.write_fmt(format_args!("{}\n", [
-                            annot.rows[pair.exon1_row].seqname.as_ref(),
+                            chr.as_ref(),
                             &ranges[0].start.to_string(),
                             &ranges[ranges.len()-1].end.to_string(),
                             &read_name,
@@ -1629,13 +1720,16 @@ fn compute_rpkm(
         }
     }
     // convert bed files to bigbed
+    let vizrefs = annot.refs.iter().
+        map(|(k,v)| (annot.vizchrmap.get(k).unwrap_or(k).clone(), *v)).
+        collect::<LinkedHashMap<Atom,u64>>();
     match debug_rpkm_region_bigbed.as_ref().map(String::as_ref) {
         None | Some("-") => (),
-        Some(f) => bed2bigbed(&format!("{}.bed", f), f, refs, true, true, trackdb)?
+        Some(f) => bed2bigbed(&format!("{}.bed", f), f, &vizrefs, true, true, trackdb)?
     };
     match debug_mapped_reads_bigbed.as_ref().map(String::as_ref) {
         None | Some("-") => (),
-        Some(f) => bed2bigbed(&format!("{}.bed", f), f, refs, true, true, trackdb)?
+        Some(f) => bed2bigbed(&format!("{}.bed", f), f, &vizrefs, true, true, trackdb)?
     };
     Ok(rpkmstats)
 }
@@ -1723,7 +1817,6 @@ fn write_exon_bigbed(
     pairs: &[ConstituitivePair], 
     annot: &IndexedAnnotation,
     file: &str, 
-    refs: &LinkedHashMap<Atom,u32>,
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<()> 
 {
@@ -1745,8 +1838,10 @@ fn write_exon_bigbed(
                 block_starts.push(cassette.range.start-annot.rows[pair.exon1_row].start+1);
             }
             block_sizes.push(annot.rows[pair.exon2_row].end-annot.rows[pair.exon2_row].start+1);
+            let chr = &annot.rows[pair.exon1_row].seqname;
+            let chr = annot.vizchrmap.get(&chr).unwrap_or(&chr);
             let line = &[
-                annot.rows[pair.exon1_row].seqname.as_ref(),
+                chr.as_ref(),
                 &(annot.rows[pair.exon1_row].start-1).to_string(),
                 &annot.rows[pair.exon2_row].end.to_string(),
                 &name,
@@ -1764,8 +1859,10 @@ fn write_exon_bigbed(
             writeln!(bw, "{}", line)?;
         }
     }
-    // bigbed file is already sorted
-    bed2bigbed(&bed_file,file,refs,true,true,trackdb)?;
+    let vizrefs = annot.refs.iter().
+        map(|(k,v)| (annot.vizchrmap.get(k).unwrap_or(k).clone(), *v)).
+        collect::<LinkedHashMap<Atom,u64>>();
+    bed2bigbed(&bed_file,file,&vizrefs,true,true,trackdb)?;
     Ok(())
 }
 
@@ -1829,22 +1926,31 @@ fn run() -> Result<()> {
         return Err("No bam files were passed in!".into());
     }
     let mrna_transcript_type = String::from("mRNA");
-    let annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
+    let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
-        IndexedAnnotation::from_gff(&annotfile_gff, 
+        IndexedAnnotation::from_gff(
+            &annotfile_gff, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), &options.chrmap_file)?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), 
+            &options.chrmap_file,
+            &options.vizchrmap_file)?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), &options.chrmap_file)?
+            options.transcript_type.get(0).unwrap_or(&mrna_transcript_type), 
+            &options.chrmap_file,
+            &options.vizchrmap_file)?
     } else {
         Options::clap().print_help()?;
         return Err("No annotation file was given!".into());
     };
     writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
-    let refs = get_bam_refs(&bamfiles[0], &annot.chrmap)?;
+    let refs = match options.sizes_file.clone() {
+        Some(sizes_file) => read_sizes_file(&sizes_file, &annot.chrmap)?,
+        None => get_bam_refs(&bamfiles[0], &annot.chrmap)?,
+    };
+    annot.refs = refs;
     
     if let Some(debug_annot_gff) = options.debug_annot_gff.clone() {
         writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gff)?;
@@ -1858,7 +1964,6 @@ fn run() -> Result<()> {
         writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_bigbed)?;
         annot.to_bigbed(
             &debug_annot_bigbed, 
-            &refs, 
             &options.exon_type, 
             &options.cds_type, 
             &options.transcript_type,
@@ -1879,7 +1984,7 @@ fn run() -> Result<()> {
     let exonpairs = find_constituitive_exons(&annot, &options)?;
     if let Some(debug_exon_bigbed) = options.debug_exon_bigbed.clone() {
         writeln!(stderr(), "Writing constituitive pairs to a bigbed file")?;
-        write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &refs, &mut trackdb)?;
+        write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &mut trackdb)?;
     }
         
     writeln!(stderr(), "Reannotating cassette regions")?;
@@ -1888,12 +1993,11 @@ fn run() -> Result<()> {
         &exonpairs, 
         &bamfiles, 
         &bamstrand,
-        &refs,
         &options,
         &mut trackdb)?;
     if let Some(debug_reannot_bigbed) = options.debug_reannot_bigbed.clone() {
         writeln!(stderr(), "Writing reannotation to bigbed")?;
-        write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &refs, &mut trackdb)?;
+        write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &mut trackdb)?;
     }
     
     writeln!(stderr(), "Computing RPKM stats")?;
@@ -1903,7 +2007,6 @@ fn run() -> Result<()> {
         total_reads, 
         &options.debug_rpkm_region_bigbed,
         &options.debug_mapped_reads_bigbed,
-        &refs,
         &mut trackdb)?;
     if let Some(debug_rpkmstats_json) = options.debug_rpkmstats_json.clone() {
         writeln!(stderr(), "Writing RPKM stats to {:?}", &debug_rpkmstats_json)?;
