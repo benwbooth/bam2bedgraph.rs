@@ -523,7 +523,7 @@ impl IndexedAnnotation {
                     .cmp(&rows[*b].seqname)
                     .then_with(|| rows[*a].start.cmp(&rows[*b].start))
             });
-            up.append(&mut vec);
+            *up = vec;
         }
         // sort row2children by coordinates
         let mut row2children_update = HashMap::<usize, Vec<usize>>::new();
@@ -536,7 +536,7 @@ impl IndexedAnnotation {
                     .cmp(&rows[*b].seqname)
                     .then_with(|| rows[*a].start.cmp(&rows[*b].start))
             });
-            up.append(&mut vec);
+            *up = vec;
         }
         // build the interval tree
         let mut tree = HashMap::<Atom, IntervalTree<u64, usize>>::new();
@@ -893,71 +893,98 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
     let gene_types: HashSet<_> = options.gene_type.iter().map(|t| Atom::from(t.as_ref())).collect();
     let transcript_types: HashSet<_> = options.transcript_type.iter().map(|t| Atom::from(t.as_ref())).collect();
     let exon_types: HashSet<_> = options.exon_type.iter().map(|t| Atom::from(t.as_ref())).collect();
+    writeln!(stderr(), "find_constituitive_exons: gene_types={:?}", gene_types)?;
+    writeln!(stderr(), "find_constituitive_exons: transcript_types={:?}", transcript_types)?;
+    writeln!(stderr(), "find_constituitive_exons: exon_types={:?}", exon_types)?;
     
     // set default feature types
     let mut exonpairs = Vec::<ConstituitivePair>::new();
     for (gene_row, gene) in annot.rows.iter().enumerate() {
-        if gene_types.contains(&gene.feature_type) {
-            if let Some(transcript_rows) = annot.row2children.get(&gene_row) {
+        if gene_types.is_empty() || gene_types.contains(&gene.feature_type) {
+            if let Some(feature_rows) = annot.row2children.get(&gene_row) {
+                // get the transcript rows for this gene
+                let mut transcript_rows = Vec::<usize>::new();
+                'transcript_row:
+                for transcript_row in feature_rows {
+                    let transcript = &annot.rows[*transcript_row];
+                    // make sure this is a transcript type
+                    // make sure transcript coordinates are consistent with the gene coordinates
+                    if (transcript_types.is_empty() || 
+                            transcript_types.contains(&transcript.feature_type)) &&
+                        transcript.seqname == gene.seqname &&
+                        transcript.strand == gene.strand 
+                    {
+                        // make sure the transcript has at least 1 exon
+                        if let Some(exon_rows) = annot.row2children.get(transcript_row) {
+                            for exon_row in exon_rows {
+                                let exon = &annot.rows[*exon_row];
+                                if (exon_types.is_empty() || 
+                                        exon_types.contains(&exon.feature_type)) &&
+                                    exon.seqname == transcript.seqname && 
+                                    exon.strand == transcript.strand 
+                                {
+                                    transcript_rows.push(*transcript_row);
+                                    break 'transcript_row;
+                                }
+                            }
+                        }
+                    }
+                }
                 // (exon1_row, exon2_row) -> (cassette_rows, transcript_rows)
                 let mut constituitive_pairs = HashMap::<(usize,usize),(HashSet<usize>,HashSet<usize>)>::new();
                 // look in each transcript
-                'transcript: for transcript_row in transcript_rows {
+                'transcript: 
+                for transcript_row in &transcript_rows {
                     let transcript = &annot.rows[*transcript_row];
-                    // make sure transcript coordinates are consistent with the gene coordinates
-                    if transcript_types.contains(&transcript.feature_type) &&
-                       transcript.seqname == gene.seqname &&
-                       transcript.strand == gene.strand {
-                        if let Some(feature_rows) = annot.row2children.get(transcript_row) {
-                            // get the set of exon features we care about
-                            let mut exon_rows = Vec::<usize>::new();
-                            for feature_row in feature_rows {
-                                let feature = &annot.rows[*feature_row];
-                                if exon_types.contains(&feature.feature_type) {
-                                    // skip any transcripts with weird exons
-                                    if feature.seqname != transcript.seqname || feature.strand != transcript.strand {
-                                        exon_rows.clear();
-                                        continue 'transcript;
-                                    }
-                                    exon_rows.push(*feature_row);
+                    if let Some(feature_rows) = annot.row2children.get(transcript_row) {
+                        // get the set of exon features we care about
+                        let mut exon_rows = Vec::<usize>::new();
+                        for feature_row in feature_rows {
+                            let feature = &annot.rows[*feature_row];
+                            if exon_types.contains(&feature.feature_type) {
+                                // skip any transcripts with weird exons
+                                if feature.seqname != transcript.seqname || feature.strand != transcript.strand {
+                                    continue 'transcript;
                                 }
+                                exon_rows.push(*feature_row);
                             }
-                            // get the constituitive exons
-                            let mut constituitive = HashSet::<usize>::new();
-                            'exon: for exon_row in &exon_rows {
-                                if let Some(parent_rows) = annot.row2parents.get(exon_row) {
-                                    let parents: HashSet<_> = parent_rows.iter().collect();
-                                    // are there any transcripts in this gene that this exon
-                                    // does NOT have as a parent?
-                                    for transcript_row in transcript_rows {
-                                        if !parents.contains(transcript_row) {
-                                            continue 'exon;
-                                        }
+                        }
+                        // get the constituitive exons
+                        let mut constituitive = HashSet::<usize>::new();
+                        'exon: 
+                        for exon_row in &exon_rows {
+                            if let Some(parent_rows) = annot.row2parents.get(exon_row) {
+                                let parents: HashSet<_> = parent_rows.iter().collect();
+                                // are there any transcripts in this gene that this exon
+                                // does NOT have as a parent?
+                                for transcript_row in &transcript_rows {
+                                    if !parents.contains(transcript_row) {
+                                        continue 'exon;
                                     }
-                                    constituitive.insert(*exon_row);
                                 }
+                                constituitive.insert(*exon_row);
                             }
-                            // get pairs of constituitive exons
-                            for (rank, exon_row) in exon_rows.iter().enumerate() {
-                                if rank < exon_rows.len()-1 && constituitive.contains(exon_row) {
-                                    // two adjacent constitutive exons
-                                    let adjacent_row = exon_rows[rank+1];
-                                    if constituitive.contains(&adjacent_row) {
+                        }
+                        // get pairs of constituitive exons
+                        for (rank, exon_row) in exon_rows.iter().enumerate() {
+                            if rank < exon_rows.len()-1 && constituitive.contains(exon_row) {
+                                // two adjacent constitutive exons
+                                let adjacent_row = exon_rows[rank+1];
+                                if constituitive.contains(&adjacent_row) {
+                                    let cp = constituitive_pairs.entry(
+                                        (*exon_row, adjacent_row)).
+                                        or_insert_with(|| (HashSet::new(), HashSet::new()));
+                                    cp.1.insert(*transcript_row);
+                                }
+                                // two constituitive exons with a single cassette inbetween
+                                else if rank < exon_rows.len()-2 {
+                                    let next_row = exon_rows[rank+2];
+                                    if constituitive.contains(&next_row) {
                                         let cp = constituitive_pairs.entry(
-                                            (*exon_row, adjacent_row)).
+                                            (*exon_row, next_row)).
                                             or_insert_with(|| (HashSet::new(), HashSet::new()));
+                                        cp.0.insert(adjacent_row);
                                         cp.1.insert(*transcript_row);
-                                    }
-                                    // two constituitive exons with a single cassette inbetween
-                                    else if rank < exon_rows.len()-2 {
-                                        let next_row = exon_rows[rank+2];
-                                        if constituitive.contains(&next_row) {
-                                            let cp = constituitive_pairs.entry(
-                                                (*exon_row, next_row)).
-                                                or_insert_with(|| (HashSet::new(), HashSet::new()));
-                                            cp.0.insert(adjacent_row);
-                                            cp.1.insert(*transcript_row);
-                                        }
                                     }
                                 }
                             }
@@ -965,18 +992,23 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                     }
                 }
                 // filter out constituitive pairs that do not cover every transcript
-                let mut valid_constituitive_pairs: Vec<_> = constituitive_pairs.into_iter().
+                let mut valid_constituitive_pairs: Vec<_> = constituitive_pairs.iter().
                     filter(|p| (p.1).1.len() == transcript_rows.len()).
-                    map(|p| ConstituitivePair {
-                        exon1_row: (p.0).0,
-                        exon2_row: (p.0).1,
-                        cassettes: (p.1).0.into_iter().
-                            map(|c| Cassette {
-                                range: (annot.rows[c].start-1)..annot.rows[c].end, 
-                                cassette_row: Some(c),
-                            }).collect(),
-                        mapped_reads: IntervalTree::new(),
-                    }).
+                    map(|p| {
+                        // sort the cassettes
+                        let mut cassettes = 
+                            (p.1).0.iter().map(|c| Cassette {
+                                    range: (annot.rows[*c].start-1)..annot.rows[*c].end, 
+                                    cassette_row: Some(*c),
+                                }).collect::<Vec<_>>();
+                        cassettes.sort_by_key(|a| a.range.start);
+                        
+                        ConstituitivePair {
+                            exon1_row: (p.0).0,
+                            exon2_row: (p.0).1,
+                            cassettes: cassettes,
+                            mapped_reads: IntervalTree::new(),
+                        }}).
                     collect();
                 exonpairs.append(&mut valid_constituitive_pairs);
             }
@@ -1834,11 +1866,13 @@ fn write_exon_bigbed(
             let mut block_sizes = Vec::<u64>::new();
             let mut block_starts = Vec::<u64>::new();
             block_sizes.push(annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1);
+            block_starts.push(0u64);
             for cassette in &pair.cassettes {
                 block_sizes.push(cassette.range.end-cassette.range.start);
                 block_starts.push(cassette.range.start-annot.rows[pair.exon1_row].start+1);
             }
             block_sizes.push(annot.rows[pair.exon2_row].end-annot.rows[pair.exon2_row].start+1);
+            block_starts.push(annot.rows[pair.exon2_row].start-annot.rows[pair.exon1_row].start);
             let chr = &annot.rows[pair.exon1_row].seqname;
             let chr = annot.vizchrmap.get(&chr).unwrap_or(&chr);
             let line = &[
@@ -1891,10 +1925,10 @@ fn run() -> Result<()> {
     }
     // set debug options if --debug flag is set
     if options.debug {
-        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
-        if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
-        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
-        if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
+        // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
+        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
+        // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
+        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
         if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(String::from("debug_exon.bb")) }
         if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
         if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
