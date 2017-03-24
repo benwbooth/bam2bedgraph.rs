@@ -590,7 +590,7 @@ fn run() -> Result<()> {
 
 fn main() {
     // enable stack traces
-    std::env::set_var("RUST_BACKTRACE", "1");
+    std::env::set_var("RUST_BACKTRACE", "full");
 
     if let Err(ref e) = run() {
         println!("error: {}", e);
