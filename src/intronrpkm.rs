@@ -611,7 +611,8 @@ impl IndexedAnnotation {
         
         let id_atom = Atom::from("ID");
         let name_atom = Atom::from("Name");
-        {   let mut bw = BufWriter::new(File::create(&bed_file)?);
+        let unsorted_bed_file = format!("{}.unsorted.bed", bed_file);
+        {   let mut bw = BufWriter::new(File::create(&unsorted_bed_file)?);
             let mut chrs = self.tree.keys().collect::<Vec<_>>();
             chrs.sort_by_key(|a| a.as_bytes());
             for chr in chrs {
@@ -713,6 +714,19 @@ impl IndexedAnnotation {
                 }
             }
         }
+        
+        // sort the bed file
+        let mut command = Command::new("sort");
+        command.args(&["-k1,1","-k2,2n","-o", &bed_file, &unsorted_bed_file]);
+        command.env("LC_COLLATE", "C");
+        let status = command.spawn()?.wait()?;
+        if !status.success() {
+            return Err(format!(
+                "Exit code {:?} returned from command {:?}", status.code(), command).into());
+        }
+        // remove the unsorted bed file
+        std::fs::remove_file(&unsorted_bed_file)?;
+        
         Ok(())
     }
     
@@ -1152,29 +1166,31 @@ fn reannotate_regions(
         }
         // fill in the incompletes
         if options.fill_incomplete_exons {
-            'INCOMPLETE_START:
             for (i, _) in incomplete_starts.iter() {
+                let mut last_end = None;
                 for j in i..end as usize {
-                    if histo.get(j).is_none() {
-                        if end_histo.get(j).is_some() {
-                            for pos in i..j {
-                                exon_regions[pos as usize] += 1;
-                            }
-                        }
-                        break 'INCOMPLETE_START;
+                    if end_histo.get(j).is_some() {
+                        last_end = Some(j);
+                    }
+                    if histo.get(j).is_none() { break }
+                }
+                if let Some(last_end) = last_end {
+                    for pos in i..last_end {
+                        exon_regions[pos as usize] += 1;
                     }
                 }
             }
-            'INCOMPLETE_END:
             for (i, _) in incomplete_ends.iter() {
+                let mut last_start = None;
                 for j in (start as usize..i-1).rev() {
-                    if j == 0 || histo.get(j-1).is_none() {
-                        if start_histo.get(j).is_some() {
-                            for pos in j..i {
-                                exon_regions[pos as usize] += 1;
-                            }
-                        }
-                        break 'INCOMPLETE_END;
+                    if start_histo.get(j).is_some() {
+                        last_start = Some(j);
+                    }
+                    if j == 0 || histo.get(j-1).is_none() { break }
+                }
+                if let Some(last_start) = last_start {
+                    for pos in last_start..i {
+                        exon_regions[pos as usize] += 1;
                     }
                 }
             }
@@ -1526,7 +1542,8 @@ fn compute_rpkm(
                 let cassette_name = format!("{}.cassettes", pair_name);
                 let cassette_color = [255,0,0];
                 if !cassette_features.is_empty() {
-                    let max_exon = if let Some(me) = cassette_features.iter().max_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(Less)) 
+                    let max_exon = 
+                        if let Some(me) = cassette_features.iter().max_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(Less)) 
                         { me.clone() } 
                         else { (cassette_features[0].0.start..cassette_features[0].0.start, 0f64) };
                     
@@ -1748,7 +1765,7 @@ fn write_exon_bigbed(
         }
     }
     // bigbed file is already sorted
-    bed2bigbed(&bed_file, &format!("{}.bb",bed_file),refs,false,true,trackdb)?;
+    bed2bigbed(&bed_file,file,refs,true,true,trackdb)?;
     Ok(())
 }
 
