@@ -61,7 +61,9 @@ pub fn cigar2exons(cigar: &[Cigar], pos: u64) -> Result<Vec<Range<u64>>> {
         match op {
             &Cigar::Match(length) => {
                 pos += length as u64;
-                exons.push(Range{start: pos - length as u64, end: pos});
+                if length > 0 {
+                    exons.push(Range{start: pos - length as u64, end: pos});
+                }
             }
             &Cigar::RefSkip(length) |
             &Cigar::Del(length) |

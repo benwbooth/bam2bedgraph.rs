@@ -265,6 +265,10 @@ fn analyze_bam(options: &Options,
         if !options.split_exons && !get_exons.is_empty() {
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
+            // if the exon does not have positive width, skip it
+            if last.end - first.start <= 0 {
+                continue;
+            }
             exons = vec![Range{start: first.start, end: last.end}];
         } else {
             exons.append(&mut get_exons);
