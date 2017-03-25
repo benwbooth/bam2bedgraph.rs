@@ -1211,7 +1211,7 @@ fn reannotate_regions(
                             continue;
                         }
                     }
-                    let exons = cigar2exons(&read.cigar(), (read.pos()-1) as u64)?;
+                    let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
                     read_pairs.entry(read_name).or_insert_with(Vec::new).push(exons);
                 }
                 for (read_name,read_pair) in read_pairs {
