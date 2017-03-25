@@ -1342,7 +1342,7 @@ fn reannotate_regions(
         for (i, value) in exon_regions.iter().enumerate() {
             if *value != exon_regions[exon_start-start] {
                 if *value > 0i32 {
-                    let exon_end = i;
+                    let exon_end = i+start;
                     let max_slippage = if caps.get(2).is_some() 
                         { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
                         else { max_slippage };
