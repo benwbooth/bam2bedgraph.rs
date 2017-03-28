@@ -109,7 +109,7 @@ struct Options {
     #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons with only one splice junction?")]
     fill_incomplete_exons: bool,
     
-    #[structopt(long="read_threads", short="r", help = "How many threads to use for reading BAM files", default_value="6")]
+    #[structopt(long="read_threads", short="r", help = "How many threads to use for reading BAM files", default_value="10")]
     read_threads: usize,
     #[structopt(long="cpu_threads", short="t", help = "How many threads to use for processing", default_value="0")]
     cpu_threads: usize,
