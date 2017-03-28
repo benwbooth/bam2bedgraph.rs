@@ -1,3 +1,4 @@
+#![recursion_limit="128"]
 #![feature(plugin)]
 #![plugin(indoc)]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
@@ -14,6 +15,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
 use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[macro_use] 
 extern crate lazy_static;
@@ -58,6 +60,16 @@ use itertools::Itertools;
 extern crate string_cache;
 use string_cache::DefaultAtom as Atom;
 
+extern crate concurrent_hashmap;
+use concurrent_hashmap::*;
+
+extern crate futures;
+use futures::Future;
+extern crate futures_cpupool;
+use futures_cpupool::CpuPool;
+
+extern crate num_cpus;
+
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
 struct Options {
@@ -97,6 +109,11 @@ struct Options {
     #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons with only one splice junction?")]
     fill_incomplete_exons: bool,
     
+    #[structopt(long="read_threads", short="r", help = "How many threads to use for reading BAM files", default_value="6")]
+    read_threads: usize,
+    #[structopt(long="cpu_threads", short="t", help = "How many threads to use for processing", default_value="0")]
+    cpu_threads: usize,
+    
     // debug output files
     #[structopt(long="debug", help = "Output all debug files?")]
     debug: bool,
@@ -124,7 +141,7 @@ struct Options {
     debug_trackdb: Option<String>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize,Clone)]
 struct Record {
     row: usize,
     seqname: Atom,
@@ -859,6 +876,13 @@ impl serde::Serialize for Cassette
         ia.end()
     }
 }
+impl std::fmt::Debug for Cassette {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{{range: {:?}, cassette_row: {:?}}}", 
+            self.range, self.cassette_row)
+    }    
+}
+#[derive(Clone)]
 struct ConstituitivePair {
     exon1_row: usize,
     exon2_row: usize,
@@ -882,6 +906,12 @@ impl serde::Serialize for ConstituitivePair
         ia.serialize_field("mapped_reads", &mapped_reads)?;
         ia.end()
     }
+}
+impl std::fmt::Debug for ConstituitivePair {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "exon1_row: {}, exon2_row: {}, cassettes: {:?}, mapped_reads: ...", 
+            self.exon1_row, self.exon2_row, self.cassettes)
+    }    
 }
 
 fn find_constituitive_exons(annot: &IndexedAnnotation,
@@ -1128,6 +1158,237 @@ fn get_bam_refs(bamfile: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHash
     Ok(refs)
 }
 
+fn reannotate_pair(exon1: &Record,
+    exon2: &Record,
+    read_pairs: &HashMap<(Atom,Atom),Vec<Vec<Range<u64>>>>,
+    debug_bigwig: &Option<Atom>,
+    fill_incomplete_exons: bool,
+    max_slippage: &Atom,
+    bw_histogram: Arc<ConcHashMap<usize,i32>>,
+    start_bw_histogram: Arc<ConcHashMap<usize,i32>>,
+    end_bw_histogram: Arc<ConcHashMap<usize,i32>>) 
+    -> Result<ConstituitivePair> 
+{
+    let pair_name = format!("{}:{}..{}:{}..{}:{}..{}:{}", 
+        exon1.seqname, 
+        exon1.start, 
+        exon1.end, 
+        exon1.strand, 
+        exon2.seqname, 
+        exon2.start, 
+        exon2.end, 
+        exon2.strand);
+    writeln!(stderr(), "Reannotating pair: {}", pair_name)?;
+    
+    let start = exon1.end as usize;
+    let end = (exon2.start-1) as usize;
+    let region_size = end-start;
+    let mut histo = vec![0i32; region_size];
+    let mut start_histo = vec![0i32; region_size];
+    let mut end_histo = vec![0i32; region_size];
+    let mut exon_regions = vec![0i32; region_size];
+    let mut incomplete_starts = vec![0i32; region_size];
+    let mut incomplete_ends = vec![0i32; region_size];
+    let mut mapped_reads = IntervalTree::<u64, Atom>::new();
+    let mut cassettes = Vec::<Cassette>::new();
+    for (&(_,ref read_name),read_pair) in read_pairs {
+        //writeln!(stderr(), "Looking at read pair {}: {:?}", read_name, read_pair)?;
+        // at least one of the read pairs must match a constituitive splice junction
+        let mut matches_splice = false;
+        for exons in read_pair {
+            matches_splice = exons.iter().enumerate().any(|(i,exon)| 
+                (i < exons.len()-1 && exon.end == exon1.end) || 
+                (i > 0 && exon.start == exon2.start-1));
+            if matches_splice { break }
+        }
+        if !matches_splice { continue }
+        
+        for exons in read_pair {
+            //writeln!(stderr(), "Looking at exons {:?} in pair {:?}", exons, read_pair)?;
+            // write the internal reads histogram and mapped_reads
+            for exon in exons {
+                //writeln!(stderr(), "Looking at exon {:?}", exon)?;
+                mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
+                for pos in exon.start..exon.end {
+                    if start <= (pos as usize) && (pos as usize) < end {
+                        histo[pos as usize - start] += 1;
+                        bw_histogram.upsert(pos as usize, 0i32, &|v| *v += 1);
+                    }
+                }
+            }
+            
+            // write the start/stop histograms
+            let matches_splice = exons.iter().enumerate().any(|(i,exon)| 
+                (i < exons.len()-1 && exon.end == exon1.end) || 
+                (i > 0 && exon.start == exon2.start-1));
+            if matches_splice {
+                for (i, exon) in exons.iter().enumerate() {
+                    //writeln!(stderr(), "Writing start/stop histo for exon {:?}", exon)?;
+                    // write start/stop histograms
+                    if i > 0 {
+                        if start <= (exon.start as usize) && (exon.start as usize) < end {
+                            start_histo[exon.start as usize - start] += 1;
+                        }
+                    }
+                    if i < exons.len()-1 {
+                        if start <= (exon.end as usize) && (exon.end as usize) < end {
+                            end_histo[exon.end as usize - start] += 1;
+                        }    
+                    }
+                    if debug_bigwig.is_some() {
+                        if i > 0 {
+                            if start <= (exon.start as usize) && (exon.start as usize) < end {
+                                start_bw_histogram.upsert(exon.start as usize, 0i32, &|v| *v += 1);
+                            }
+                        }
+                        if i < exons.len()-1 {
+                            if start <= (exon.end as usize) && (exon.end as usize) < end {
+                                end_bw_histogram.upsert(exon.end as usize, 0i32, &|v| *v += 1);
+                            }
+                        }
+                    }
+                    
+                    // write the exon_regions histogram
+                    if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
+                        for pos in exon.start..exon.end {
+                            if start <= (pos as usize) && (pos as usize) < end {
+                                exon_regions[pos as usize - start] += 1;
+                            }
+                        }
+                    }
+                    // write incomplete starts/ends histograms
+                    if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
+                        if start <= (exon.end as usize) && (exon.end as usize) < end {
+                            incomplete_ends[exon.end as usize - start] += 1;
+                        }
+                    }
+                    if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
+                        if start <= (exon.start as usize) && (exon.start as usize) < end {
+                            incomplete_starts[(exon.start as usize) - start] += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // fill in the incompletes
+    if fill_incomplete_exons {
+        writeln!(stderr(), "Filling in incomplete starts")?;
+        for (i,value) in incomplete_starts.iter().enumerate() {
+            if *value > 0i32 {
+                let i = i+start;
+                let mut last_end = None;
+                for j in i..end as usize {
+                    if end_histo.get(j-start).is_some() {
+                        last_end = Some(j);
+                    }
+                    if histo.get(j-start as usize).is_none() { break }
+                }
+                if let Some(last_end) = last_end {
+                    for pos in i..last_end {
+                        exon_regions[(pos-start) as usize] += 1;
+                    }
+                }
+            }
+        }
+        writeln!(stderr(), "Filling in incomplete ends")?;
+        for (i,value) in incomplete_ends.iter().enumerate() {
+            if *value > 0i32 {
+                let i = i+start;
+                let mut last_start = None;
+                for j in (start as usize..i-1).rev() {
+                    if start_histo.get(j-start).is_some() {
+                        last_start = Some(j);
+                    }
+                    if j == start || histo.get((j-1)-start).is_none() { break }
+                }
+                if let Some(last_start) = last_start {
+                    for pos in last_start..i {
+                        exon_regions[(pos-start) as usize] += 1;
+                    }
+                }
+            }
+        }
+    }
+    // iterate through exon regions
+    lazy_static! {
+        static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
+    }
+    let caps = MAX_SLIPPAGE.captures(&max_slippage).r()?;
+    let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
+    let mut exon_start = start;
+    for (i, value) in exon_regions.iter().enumerate() {
+        if *value != exon_regions[exon_start-start] {
+            if *value > 0i32 {
+                let exon_end = i+start;
+                writeln!(stderr(), "Looking at exon region {}..{}", exon_start, exon_end)?;
+                let max_slippage = if caps.get(2).is_some() 
+                    { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
+                    else { max_slippage };
+                // find histogram peaks of the start and end
+                let mut max = 0i32;
+                let mut reannot_exon_start = exon_start;
+                for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
+                    if let Some(val) = start_histo.get((j-start) as usize) {
+                        if max < *val {  
+                            max = *val;
+                            reannot_exon_start = j;
+                        }
+                    }
+                }
+                let mut max = 0i32;
+                let mut reannot_exon_end = exon_end;
+                for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
+                    if let Some(val) = end_histo.get((j-start) as usize) {
+                        if max < *val {
+                            max = *val;
+                            reannot_exon_end = j;
+                        }
+                    }
+                }
+                let mut max = 0i32;
+                let mut reannot_exon_end2 = exon_end;
+                for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
+                    if let Some(val) = end_histo.get((j-start) as usize) {
+                        if max < *val {
+                            max = *val;
+                            reannot_exon_end2 = j;
+                        }
+                    }
+                }
+                let mut max = 0i32;
+                let mut reannot_exon_start2 = exon_start;
+                for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
+                    if let Some(val) = start_histo.get((j-start) as usize) {
+                        if max < *val {  
+                            max = *val;
+                            reannot_exon_start2 = j;
+                        }
+                    }
+                }
+                let (exon_start, exon_end) = 
+                    if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
+                    {(reannot_exon_start2, reannot_exon_end2)}
+                    else {(reannot_exon_start, reannot_exon_end)};
+                // store the reannotated cassette exon
+                cassettes.push(Cassette {
+                    range: exon_start as u64..exon_end as u64,
+                    cassette_row: None,
+                });
+            }
+            exon_start = i+start;
+        }
+    }
+    let reannotpair = ConstituitivePair {
+        exon1_row: exon1.row,
+        exon2_row: exon2.row,
+        cassettes: cassettes,
+        mapped_reads: mapped_reads,
+    };
+    writeln!(stderr(), "Writing reannotated pair: {:?}", reannotpair)?;
+    Ok(reannotpair)
+}
+
 fn reannotate_regions(
     annot: &IndexedAnnotation,
     pairs: &[ConstituitivePair], 
@@ -1137,276 +1398,150 @@ fn reannotate_regions(
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<Vec<ConstituitivePair>>
 {
-    let mut reannotated = Vec::<ConstituitivePair>::new();
     // bigwig histograms
-    let mut plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
-    let mut minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
-    let mut start_plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
-    let mut start_minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
-    let mut end_plus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
-    let mut end_minus_bw_histo = HashMap::<Atom,HashMap<usize,i32>>::new();
+    let mut plus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
+    let mut minus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
+    let mut start_plus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
+    let mut start_minus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
+    let mut end_plus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
+    let mut end_minus_bw_histo = HashMap::<Atom,Arc<ConcHashMap<usize,i32>>>::new();
     // allocate the bigwig histograms
     if options.debug_bigwig.is_some() {
         for (chr, _) in &annot.refs {
-            plus_bw_histo.insert(chr.clone(), HashMap::new());
-            minus_bw_histo.insert(chr.clone(), HashMap::new());
-            start_plus_bw_histo.insert(chr.clone(), HashMap::new());
-            start_minus_bw_histo.insert(chr.clone(), HashMap::new());
-            end_plus_bw_histo.insert(chr.clone(), HashMap::new());
-            end_minus_bw_histo.insert(chr.clone(), HashMap::new());
+            plus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
+            minus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
+            start_plus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
+            start_minus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
+            end_plus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
+            end_minus_bw_histo.insert(chr.clone(),Arc::new(ConcHashMap::<usize,i32>::new()));
         }
     }
-    // store the refseq names and sizes
-    // iterate through each constituitive pair
+    // wrap them in an Arc
+    let plus_bw_histo = Arc::new(plus_bw_histo);
+    let minus_bw_histo = Arc::new(minus_bw_histo);
+    let start_plus_bw_histo = Arc::new(start_plus_bw_histo);
+    let start_minus_bw_histo = Arc::new(start_minus_bw_histo);
+    let end_plus_bw_histo = Arc::new(end_plus_bw_histo);
+    let end_minus_bw_histo = Arc::new(end_minus_bw_histo);
+    
+    let mut bamreaders = Vec::<(Atom,Arc<Mutex<IndexedReader>>,HashMap<Atom,u32>,Option<bool>)>::new();
+    for (i,bamfile) in bamfiles.iter().enumerate() {
+        let bam = IndexedReader::from_path(bamfile)?;
+        let read1strand = bamstrand[i];
+        // build the tid map for this bam file
+        let mut tidmap = HashMap::<Atom,u32>::new();
+        {   let header = bam.header();
+            for target_name in header.target_names() {
+                let tid = header.tid(target_name).r()?;
+                let target_name = Atom::from(std::str::from_utf8(target_name)?);
+                let chr = annot.chrmap.get(&target_name).unwrap_or(&target_name);
+                tidmap.insert(chr.clone(), tid);
+            }
+        }
+        bamreaders.push((Atom::from(bamfile.as_ref()),Arc::new(Mutex::new(bam)),tidmap,read1strand));
+    }
+    let mut reannotated = Vec::new();
+    let num_cpus = num_cpus::get();
+    let readpool = CpuPool::new(if options.read_threads==0 {num_cpus} else {options.read_threads});
+    let pool = CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads});
+    let mut pair_futures = Vec::new();
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let start = annot.rows[pair.exon1_row].end as usize;
-        let end = (annot.rows[pair.exon2_row].start-1) as usize;
-        let region_size = end-start;
-        let mut histo = vec![0i32; region_size];
-        let mut start_histo = vec![0i32; region_size];
-        let mut end_histo = vec![0i32; region_size];
-        let mut exon_regions = vec![0i32; region_size];
-        let mut incomplete_starts = vec![0i32; region_size];
-        let mut incomplete_ends = vec![0i32; region_size];
-        let mut mapped_reads = IntervalTree::<u64, Atom>::new();
-        let mut cassettes = Vec::<Cassette>::new();
-        for (b, bamfile) in bamfiles.iter().enumerate() {
-            let read1strand = bamstrand[b];
-            let mut bam = IndexedReader::from_path(bamfile)?;
-            let chr = &annot.rows[pair.exon1_row].seqname;
-            let strand = &annot.rows[pair.exon1_row].strand;
-            let strand_is_plus = strand == "+";
-            let mut bw_histogram = 
-                if strand_is_plus { plus_bw_histo.get_mut(chr).r()? } 
-                else { minus_bw_histo.get_mut(chr).r()? };
-            let mut start_bw_histogram = 
-                if strand_is_plus { start_plus_bw_histo.get_mut(chr).r()? } 
-                else { start_minus_bw_histo.get_mut(chr).r()? };
-            let mut end_bw_histogram = 
-                if strand_is_plus { end_plus_bw_histo.get_mut(chr).r()? }
-                else { end_minus_bw_histo.get_mut(chr).r()? };
-            
-            // build the tid map for this bam file
-            let mut tidmap = HashMap::<Atom,u32>::new();
-            {   let header = bam.header();
-                for target_name in header.target_names() {
-                    let tid = header.tid(target_name).r()?;
-                    let target_name = Atom::from(std::str::from_utf8(target_name)?);
-                    let chr = annot.chrmap.get(&target_name).unwrap_or(&target_name);
-                    tidmap.insert(chr.clone(), tid);
-                }
-            }
-            if let Some(tid) = tidmap.get(chr) {
-                // group reads by pairs
-                let mut read_pairs = HashMap::<Atom,Vec<Vec<Range<u64>>>>::new();
-                bam.seek(*tid, start as u32, end as u32)?;
-                for read in bam.records() {
-                    let read = read?;
-                    let read_name = Atom::from(str::from_utf8(read.qname())?);
-                    // make sure the read's strand matches
-                    if let Some(is_read1strand) = read1strand {
-                        if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
-                            continue;
+        let chr = exon1.seqname.clone();
+        let start = exon1.end;
+        let end = (exon2.start-1) as usize;
+        let strand = &exon1.strand;
+        let strand_is_plus = strand == "+";
+        
+        //get all the bam reads in parallel
+        let mut read_futures = Vec::new();
+        for &mut (ref bamfile,ref mut bam,ref tidmap,ref read1strand) in bamreaders.iter_mut() {
+            let bamfile = bamfile.clone();
+            let bam = bam.clone();
+            let tidmap = tidmap.clone();
+            let read1strand = read1strand.clone();
+            let chr = chr.clone();
+            let future = readpool.spawn_fn(move ||->Result<HashMap<(Atom,Atom),Vec<Vec<Range<u64>>>>> {
+                let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
+                if let Some(tid) = tidmap.get(&chr) {
+                    // group reads by pairs
+                    let bam: Result<MutexGuard<_>> = bam.lock().map_err(|e| format!("Mutex error: {:?}",e).into());
+                    let mut bam = bam?;
+                    bam.seek(*tid, start as u32, end as u32)?;
+                    for read in bam.records() {
+                        let read = read?;
+                        let read_name = Atom::from(str::from_utf8(read.qname())?);
+                        //writeln!(stderr(), "Looking at read: {}", read_name)?;
+                        // make sure the read's strand matches
+                        if let Some(is_read1strand) = read1strand {
+                            if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
+                                continue;
+                            }
                         }
+                        let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+                        read_pairs.entry((bamfile.clone(),read_name)).or_insert_with(Vec::new).push(exons);
                     }
-                    let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-                    read_pairs.entry(read_name).or_insert_with(Vec::new).push(exons);
                 }
-                for (read_name,read_pair) in read_pairs {
-                    // at least one of the read pairs must match a constituitive splice junction
-                    let mut matches_splice = false;
-                    for exons in &read_pair {
-                        matches_splice = exons.iter().enumerate().any(|(i,exon)| 
-                            (i < exons.len()-1 && exon.end == exon1.end) || 
-                            (i > 0 && exon.start == exon2.start-1));
-                        if matches_splice { break }
+                Ok(read_pairs)
+            });
+            read_futures.push(future);
+        }
+        // join the reads together
+        let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
+        for future in read_futures {
+            match future.wait() {
+                Ok(rps) => {
+                    for (k,v) in rps {
+                        read_pairs.insert(k,v);
                     }
-                    if !matches_splice { continue }
+                }
+                Err(ref e) => {
+                    writeln!(stderr(), "Got Err while reaading bam file: {:?}", e)?;
+                }
+            };
+        }
+        let chr = exon1.seqname.clone();
+        let bw_histogram = 
+            if strand_is_plus { plus_bw_histo[&chr].clone() } 
+            else { minus_bw_histo[&chr].clone() };
+        let start_bw_histogram = 
+            if strand_is_plus { start_plus_bw_histo[&chr].clone() } 
+            else { start_minus_bw_histo[&chr].clone() };
+        let end_bw_histogram = 
+            if strand_is_plus { end_plus_bw_histo[&chr].clone() }
+            else { end_minus_bw_histo[&chr].clone() };
                     
-                    for exons in &read_pair {
-                        // write the internal reads histogram and mapped_reads
-                        for exon in exons {
-                            mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
-                            for pos in exon.start..exon.end {
-                                if start <= (pos as usize) && (pos as usize) < end {
-                                    histo[pos as usize - start] += 1;
-                                    *bw_histogram.entry(pos as usize).or_insert(0i32) += 1;
-                                }
-                            }
-                        }
-                        
-                        // write the start/stop histograms
-                        let matches_splice = exons.iter().enumerate().any(|(i,exon)| 
-                            (i < exons.len()-1 && exon.end == exon1.end) || 
-                            (i > 0 && exon.start == exon2.start-1));
-                        if matches_splice {
-                            for (i, exon) in exons.iter().enumerate() {
-                                // write start/stop histograms
-                                if i > 0 {
-                                    if start <= (exon.start as usize) && (exon.start as usize) < end {
-                                        start_histo[exon.start as usize - start] += 1;
-                                    }
-                                }
-                                if i < exons.len()-1 {
-                                    if start <= (exon.end as usize) && (exon.end as usize) < end {
-                                        end_histo[exon.end as usize - start] += 1;
-                                    }    
-                                }
-                                if options.debug_bigwig.is_some() {
-                                    if i > 0 {
-                                        if start <= (exon.start as usize) && (exon.start as usize) < end {
-                                            *start_bw_histogram.entry(exon.start as usize).or_insert(0i32) += 1;
-                                        }
-                                    }
-                                    if i < exons.len()-1 {
-                                        if start <= (exon.end as usize) && (exon.end as usize) < end {
-                                            *end_bw_histogram.entry(exon.end as usize).or_insert(0i32) += 1;
-                                        }
-                                    }
-                                }
-                                
-                                // write the exon_regions histogram
-                                if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
-                                    for pos in exon.start..exon.end {
-                                        if start <= (pos as usize) && (pos as usize) < end {
-                                            exon_regions[pos as usize - start] += 1;
-                                        }
-                                    }
-                                }
-                                // write incomplete starts/ends histograms
-                                if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
-                                    if start <= (exon.end as usize) && (exon.end as usize) < end {
-                                        incomplete_ends[exon.end as usize - start] += 1;
-                                    }
-                                }
-                                if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
-                                    if start <= (exon.start as usize) && (exon.start as usize) < end {
-                                        incomplete_starts[(exon.start as usize) - start] += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            else {
-                writeln!(stderr(), "Could not map tid for chr {} in bam file {}, skipping!", chr, bamfile)?;
-            }
-        }
-        // fill in the incompletes
-        if options.fill_incomplete_exons {
-            for (i,value) in incomplete_starts.iter().enumerate() {
-                if *value > 0i32 {
-                    let i = i+start;
-                    let mut last_end = None;
-                    for j in i..end as usize {
-                        if end_histo.get(j-start).is_some() {
-                            last_end = Some(j);
-                        }
-                        if histo.get(j-start as usize).is_none() { break }
-                    }
-                    if let Some(last_end) = last_end {
-                        for pos in i..last_end {
-                            exon_regions[(pos-start) as usize] += 1;
-                        }
-                    }
-                }
-            }
-            for (i,value) in incomplete_ends.iter().enumerate() {
-                if *value > 0i32 {
-                    let i = i+start;
-                    let mut last_start = None;
-                    for j in (start as usize..i-1).rev() {
-                        if start_histo.get(j-start).is_some() {
-                            last_start = Some(j);
-                        }
-                        if j == start || histo.get((j-1)-start).is_none() { break }
-                    }
-                    if let Some(last_start) = last_start {
-                        for pos in last_start..i {
-                            exon_regions[(pos-start) as usize] += 1;
-                        }
-                    }
-                }
-            }
-        }
-        // iterate through exon regions
-        lazy_static! {
-            static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
-        }
-        let caps = MAX_SLIPPAGE.captures(&options.max_slippage).r()?;
-        let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
-        let mut exon_start = start;
-        for (i, value) in exon_regions.iter().enumerate() {
-            if *value != exon_regions[exon_start-start] {
-                if *value > 0i32 {
-                    let exon_end = i+start;
-                    let max_slippage = if caps.get(2).is_some() 
-                        { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
-                        else { max_slippage };
-                    // find histogram peaks of the start and end
-                    let mut max = 0i32;
-                    let mut reannot_exon_start = exon_start;
-                    for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
-                        if let Some(val) = start_histo.get((j-start) as usize) {
-                            if max < *val {  
-                                max = *val;
-                                reannot_exon_start = j;
-                            }
-                        }
-                    }
-                    let mut max = 0i32;
-                    let mut reannot_exon_end = exon_end;
-                    for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
-                        if let Some(val) = end_histo.get((j-start) as usize) {
-                            if max < *val {
-                                max = *val;
-                                reannot_exon_end = j;
-                            }
-                        }
-                    }
-                    let mut max = 0i32;
-                    let mut reannot_exon_end2 = exon_end;
-                    for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
-                        if let Some(val) = end_histo.get((j-start) as usize) {
-                            if max < *val {
-                                max = *val;
-                                reannot_exon_end2 = j;
-                            }
-                        }
-                    }
-                    let mut max = 0i32;
-                    let mut reannot_exon_start2 = exon_start;
-                    for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
-                        if let Some(val) = start_histo.get((j-start) as usize) {
-                            if max < *val {  
-                                max = *val;
-                                reannot_exon_start2 = j;
-                            }
-                        }
-                    }
-                    let (exon_start, exon_end) = 
-                        if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
-                        {(reannot_exon_start2, reannot_exon_end2)}
-                        else {(reannot_exon_start, reannot_exon_end)};
-                    // store the reannotated cassette exon
-                    cassettes.push(Cassette {
-                        range: exon_start as u64..exon_end as u64,
-                        cassette_row: None,
-                    });
-                }
-                exon_start = i+start;
-            }
-        }
-        reannotated.push(ConstituitivePair {
-            exon1_row: pair.exon1_row,
-            exon2_row: pair.exon2_row,
-            cassettes: cassettes,
-            mapped_reads: mapped_reads,
+        // process the constituitivepair in parallel
+        let exon1 = annot.rows[pair.exon1_row].clone();
+        let exon2 = annot.rows[pair.exon2_row].clone();
+        let debug_bigwig = options.debug_bigwig.clone().map(Atom::from);
+        let fill_incomplete_exons = options.fill_incomplete_exons;
+        let max_slippage = Atom::from(options.max_slippage.clone());
+        let pair_future = pool.spawn_fn(move || {
+            reannotate_pair(&exon1,
+                &exon2,
+                &read_pairs,
+                &debug_bigwig,
+                fill_incomplete_exons,
+                &max_slippage,
+                bw_histogram,
+                start_bw_histogram,
+                end_bw_histogram) 
         });
+        pair_futures.push(pair_future);
     }
+    for future in pair_futures {
+        match future.wait() {
+            Ok(pair) => {
+                reannotated.push(pair);
+            }
+            Err(ref e) => {
+                writeln!(stderr(), "Got Err in reannotation: {:?}", e)?;
+            }
+        };
+    }
+    
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
@@ -1425,7 +1560,7 @@ fn reannotate_regions(
 
 fn write_bigwig(
     file: &str, 
-    histogram: &HashMap<Atom,HashMap<usize,i32>>, 
+    histogram: &HashMap<Atom,Arc<ConcHashMap<usize,i32>>>, 
     refs: &LinkedHashMap<Atom,u64>,
     vizchrmap: &HashMap<Atom,Atom>,
     strand: &str,
@@ -1440,27 +1575,35 @@ fn write_bigwig(
         // sort the chrs by ascii values. This is required by bedGraphToBigWig
         let mut chrs = histogram.keys().map(|c| (c, vizchrmap.get(c).unwrap_or(c))).collect::<Vec<_>>();
         chrs.sort_by_key(|a| a.1.as_bytes());
-        let zero = 0i32;
         for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
             let reflength = refs[vizchr] as usize;
             let mut start = 0usize;
-            let mut start_value = histo.get(&start).unwrap_or(&zero);
+            let mut start_value = 0i32;
+            if let Some(start_val) = histo.find(&start) {
+                start_value = *start_val.get();
+            }
             for i in 0usize..reflength {
-                let value = histo.get(&i).unwrap_or(&zero);
+                let mut value = 0i32;
+                if let Some(v) = histo.find(&i) {
+                    value = *v.get();
+                }
                 if value != start_value {
-                    if *value > 0i32 {
+                    if value > 0i32 {
                         if strand == "-" {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, i, -(*value as i64))?;
+                                     vizchr, start, i, -(value as i64))?;
                         }
                         else {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, i, *value)?;
+                                     vizchr, start, i, value)?;
                         }
                     }
                     start = i;
-                    start_value = histo.get(&start).unwrap_or(&zero);
+                    start_value = 0i32;
+                    if let Some(v) = histo.find(&start) {
+                        start_value = *v.get();
+                    }
                 }
             }
         }
@@ -2078,12 +2221,12 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
 
     if let Err(ref e) = run() {
-        println!("error: {}", e);
+        writeln!(stderr(), "error: {}", e).unwrap();
         for e in e.iter().skip(1) {
-            println!("caused by: {}", e);
+            writeln!(stderr(), "caused by: {}", e).unwrap();
         }
         if let Some(backtrace) = e.backtrace() {
-            println!("backtrace: {:?}", backtrace);
+            writeln!(stderr(), "backtrace: {:?}", backtrace).unwrap();
         }
         ::std::process::exit(1);
     }
