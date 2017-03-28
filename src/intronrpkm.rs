@@ -1442,65 +1442,17 @@ fn reannotate_regions(
     }
     let mut reannotated = Vec::new();
     let num_cpus = num_cpus::get();
-    let readpool = CpuPool::new(if options.read_threads==0 {num_cpus} else {options.read_threads});
-    let pool = CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads});
+    let readpool = Arc::new(CpuPool::new(if options.read_threads==0 {num_cpus} else {options.read_threads}));
+    let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
     let mut pair_futures = Vec::new();
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let chr = exon1.seqname.clone();
         let start = exon1.end;
         let end = (exon2.start-1) as usize;
         let strand = &exon1.strand;
         let strand_is_plus = strand == "+";
         
-        //get all the bam reads in parallel
-        let mut read_futures = Vec::new();
-        for &mut (ref bamfile,ref mut bam,ref tidmap,ref read1strand) in bamreaders.iter_mut() {
-            let bamfile = bamfile.clone();
-            let bam = bam.clone();
-            let tidmap = tidmap.clone();
-            let read1strand = read1strand.clone();
-            let chr = chr.clone();
-            let future = readpool.spawn_fn(move ||->Result<HashMap<(Atom,Atom),Vec<Vec<Range<u64>>>>> {
-                let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
-                if let Some(tid) = tidmap.get(&chr) {
-                    // group reads by pairs
-                    let bam: Result<MutexGuard<_>> = bam.lock().map_err(|e| format!("Mutex error: {:?}",e).into());
-                    let mut bam = bam?;
-                    bam.seek(*tid, start as u32, end as u32)?;
-                    for read in bam.records() {
-                        let read = read?;
-                        let read_name = Atom::from(str::from_utf8(read.qname())?);
-                        //writeln!(stderr(), "Looking at read: {}", read_name)?;
-                        // make sure the read's strand matches
-                        if let Some(is_read1strand) = read1strand {
-                            if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
-                                continue;
-                            }
-                        }
-                        let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-                        read_pairs.entry((bamfile.clone(),read_name)).or_insert_with(Vec::new).push(exons);
-                    }
-                }
-                Ok(read_pairs)
-            });
-            read_futures.push(future);
-        }
-        // join the reads together
-        let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
-        for future in read_futures {
-            match future.wait() {
-                Ok(rps) => {
-                    for (k,v) in rps {
-                        read_pairs.insert(k,v);
-                    }
-                }
-                Err(ref e) => {
-                    writeln!(stderr(), "Got Err while reaading bam file: {:?}", e)?;
-                }
-            };
-        }
         let chr = exon1.seqname.clone();
         let bw_histogram = 
             if strand_is_plus { plus_bw_histo[&chr].clone() } 
@@ -1518,7 +1470,57 @@ fn reannotate_regions(
         let debug_bigwig = options.debug_bigwig.clone().map(Atom::from);
         let fill_incomplete_exons = options.fill_incomplete_exons;
         let max_slippage = Atom::from(options.max_slippage.clone());
+        let mut bamreaders = bamreaders.clone();
+        let readpool = readpool.clone();
         let pair_future = pool.spawn_fn(move || {
+            //get all the bam reads in parallel
+            let mut read_futures = Vec::new();
+            for &mut (ref bamfile,ref mut bam,ref tidmap,ref read1strand) in bamreaders.iter_mut() {
+                let bamfile = bamfile.clone();
+                let bam = bam.clone();
+                let tidmap = tidmap.clone();
+                let read1strand = read1strand.clone();
+                let chr = chr.clone();
+                let future = readpool.spawn_fn(move ||->Result<HashMap<(Atom,Atom),Vec<Vec<Range<u64>>>>> {
+                    let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
+                    if let Some(tid) = tidmap.get(&chr) {
+                        // unlock the IndexedReader from the mutex
+                        let bam: Result<MutexGuard<_>> = bam.lock().map_err(|e| format!("Mutex error: {:?}",e).into());
+                        let mut bam = bam?;
+                        // group reads by pairs
+                        bam.seek(*tid, start as u32, end as u32)?;
+                        for read in bam.records() {
+                            let read = read?;
+                            let read_name = Atom::from(str::from_utf8(read.qname())?);
+                            //writeln!(stderr(), "Looking at read: {}", read_name)?;
+                            // make sure the read's strand matches
+                            if let Some(is_read1strand) = read1strand {
+                                if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
+                                    continue;
+                                }
+                            }
+                            let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+                            read_pairs.entry((bamfile.clone(),read_name)).or_insert_with(Vec::new).push(exons);
+                        }
+                    }
+                    Ok(read_pairs)
+                });
+                read_futures.push(future);
+            }
+            // join the reads together
+            let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
+            for future in read_futures {
+                match future.wait() {
+                    Ok(rps) => {
+                        for (k,v) in rps {
+                            read_pairs.insert(k,v);
+                        }
+                    }
+                    Err(ref e) => {
+                        writeln!(stderr(), "Got Err while reaading bam file: {:?}", e)?;
+                    }
+                };
+            }
             reannotate_pair(&exon1,
                 &exon2,
                 &read_pairs,
