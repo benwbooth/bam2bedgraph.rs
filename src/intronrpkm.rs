@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 #[macro_use] 
 extern crate lazy_static;
@@ -30,7 +30,7 @@ use regex::Captures;
 
 extern crate rust_htslib;
 use rust_htslib::bam::Read;
-use rust_htslib::bam::IndexedReader;
+use rust_htslib::bam::{Reader, IndexedReader};
 
 extern crate bio;
 use bio::data_structures::interval_tree::IntervalTree;
@@ -1160,7 +1160,7 @@ fn get_bam_refs(bamfile: &str, chrmap: &HashMap<Atom,Atom>) -> Result<LinkedHash
 
 fn reannotate_pair(exon1: &Record,
     exon2: &Record,
-    read_pairs: &HashMap<(Atom,Atom),Vec<Vec<Range<u64>>>>,
+    read_pairs: &HashMap<Atom,Vec<Vec<Range<u64>>>>,
     debug_bigwig: &Option<Atom>,
     fill_incomplete_exons: bool,
     max_slippage: &Atom,
@@ -1191,7 +1191,7 @@ fn reannotate_pair(exon1: &Record,
     let mut incomplete_ends = vec![0i32; region_size];
     let mut mapped_reads = IntervalTree::<u64, Atom>::new();
     let mut cassettes = Vec::<Cassette>::new();
-    for (&(_,ref read_name),read_pair) in read_pairs {
+    for (read_name,read_pair) in read_pairs {
         //writeln!(stderr(), "Looking at read pair {}: {:?}", read_name, read_pair)?;
         // at least one of the read pairs must match a constituitive splice junction
         let mut matches_splice = false;
@@ -1389,6 +1389,40 @@ fn reannotate_pair(exon1: &Record,
     Ok(reannotpair)
 }
 
+fn bam2tree(
+    bamfile: &str,
+    read1strand: &Option<bool>,
+    chrmap: &HashMap<Atom,Atom>,
+    tree: &mut HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>) 
+    -> Result<()> 
+{
+    let bam = Reader::from_path(bamfile)?;
+    let mut tidmap = HashMap::<u32,Atom>::new();
+    {   let header = bam.header();
+        for target_name in header.target_names() {
+            let tid = header.tid(target_name).r()?;
+            let target_name = Atom::from(std::str::from_utf8(target_name)?);
+            let chr = chrmap.get(&target_name).unwrap_or(&target_name);
+            tidmap.insert(tid, chr.clone());
+        }
+    }
+    let mut read = rust_htslib::bam::record::Record::new();
+    while bam.read(&mut read).is_ok() {
+        let mut strand = Atom::from("+");
+        if let Some(is_read1strand) = read1strand.clone() {
+            strand = Atom::from(if (is_read1strand == read.is_first_in_template()) == !read.is_reverse() 
+                {"+"} else {"-"});
+        }
+        let tid = read.tid();
+        let chr = &tidmap[&(tid as u32)];
+        let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+        let t = tree.entry((chr.clone(),strand)).or_insert_with(|| IntervalTree::new());
+        let qname = Atom::from(str::from_utf8(read.qname().clone())?);
+        t.insert(Interval::new(read.pos() as u64..exons[exons.len()-1].end)?, (qname, exons));
+    }
+    Ok(())
+}
+
 fn reannotate_regions(
     annot: &IndexedAnnotation,
     pairs: &[ConstituitivePair], 
@@ -1424,22 +1458,15 @@ fn reannotate_regions(
     let end_plus_bw_histo = Arc::new(end_plus_bw_histo);
     let end_minus_bw_histo = Arc::new(end_minus_bw_histo);
     
-    let mut bamreaders = Vec::<(Atom,Arc<Mutex<IndexedReader>>,HashMap<Atom,u32>,Option<bool>)>::new();
+    // read all the bam reads into an interval tree
+    let mut tree: HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>> = HashMap::new();
     for (i,bamfile) in bamfiles.iter().enumerate() {
-        let bam = IndexedReader::from_path(bamfile)?;
         let read1strand = bamstrand[i];
-        // build the tid map for this bam file
-        let mut tidmap = HashMap::<Atom,u32>::new();
-        {   let header = bam.header();
-            for target_name in header.target_names() {
-                let tid = header.tid(target_name).r()?;
-                let target_name = Atom::from(std::str::from_utf8(target_name)?);
-                let chr = annot.chrmap.get(&target_name).unwrap_or(&target_name);
-                tidmap.insert(chr.clone(), tid);
-            }
-        }
-        bamreaders.push((Atom::from(bamfile.as_ref()),Arc::new(Mutex::new(bam)),tidmap,read1strand));
+        writeln!(stderr(),"Reading bam file {}", bamfile)?;
+        bam2tree(&bamfile,&read1strand,&annot.chrmap, &mut tree)?;
     }
+    let tree = Arc::new(tree);
+    
     let mut reannotated = Vec::new();
     let num_cpus = num_cpus::get();
     let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
@@ -1447,8 +1474,9 @@ fn reannotate_regions(
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
         let exon2 = &annot.rows[pair.exon2_row];
-        let start = exon1.end;
-        let end = (exon2.start-1) as usize;
+        let debug_bigwig = options.debug_bigwig.clone().map(Atom::from);
+        let fill_incomplete_exons = options.fill_incomplete_exons;
+        let max_slippage = Atom::from(options.max_slippage.clone());
         let strand = &exon1.strand;
         let strand_is_plus = strand == "+";
         
@@ -1462,44 +1490,25 @@ fn reannotate_regions(
         let end_bw_histogram = 
             if strand_is_plus { end_plus_bw_histo[&chr].clone() }
             else { end_minus_bw_histo[&chr].clone() };
+        let tree = tree.clone();
+        let exon1 = exon1.clone();
+        let exon2 = exon2.clone();
                     
         // process the constituitivepair in parallel
-        let exon1 = annot.rows[pair.exon1_row].clone();
-        let exon2 = annot.rows[pair.exon2_row].clone();
-        let debug_bigwig = options.debug_bigwig.clone().map(Atom::from);
-        let fill_incomplete_exons = options.fill_incomplete_exons;
-        let max_slippage = Atom::from(options.max_slippage.clone());
-        let mut bamreaders = bamreaders.clone();
         let pair_future = pool.spawn_fn(move || {
+            let start = exon1.end;
+            let end = exon2.start-1;
+            let strand = &exon1.strand;
             //get all the bam reads in parallel
-            let mut read_pairs = HashMap::<(Atom,Atom),Vec<Vec<Range<u64>>>>::new();
-            for &mut (ref bamfile,ref mut bam,ref tidmap,ref read1strand) in bamreaders.iter_mut() {
-                let bamfile = bamfile.clone();
-                let bam = bam.clone();
-                let tidmap = tidmap.clone();
-                let read1strand = read1strand.clone();
-                let chr = chr.clone();
-                if let Some(tid) = tidmap.get(&chr) {
-                    // unlock the IndexedReader from the mutex
-                    let bam: Result<MutexGuard<_>> = bam.lock().map_err(|e| format!("Mutex error: {:?}",e).into());
-                    let mut bam = bam?;
-                    // group reads by pairs
-                    bam.seek(*tid, start as u32, end as u32)?;
-                    for read in bam.records() {
-                        let read = read?;
-                        let read_name = Atom::from(str::from_utf8(read.qname())?);
-                        //writeln!(stderr(), "Looking at read: {}", read_name)?;
-                        // make sure the read's strand matches
-                        if let Some(is_read1strand) = read1strand {
-                            if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
-                                continue;
-                            }
-                        }
-                        let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-                        read_pairs.entry((bamfile.clone(),read_name)).or_insert_with(Vec::new).push(exons);
-                    }
+            let mut read_pairs = HashMap::<Atom,Vec<Vec<Range<u64>>>>::new();
+            
+            if let Some(t) = tree.get(&(chr,strand.clone())) {
+                for node in t.find(start..end) {
+                    let mut rpexons = read_pairs.entry(node.data().0.clone()).or_insert_with(Vec::new);
+                    rpexons.push(node.data().1.clone());
                 }
             }
+            
             reannotate_pair(&exon1,
                 &exon2,
                 &read_pairs,
@@ -2072,7 +2081,7 @@ fn run() -> Result<()> {
         // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
         // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
         if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(String::from("debug_exon.bb")) }
-        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
+        //if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
         if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
         if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(String::from("debug_rpkm.bb")) }
         if options.debug_mapped_reads_bigbed.is_none() { options.debug_mapped_reads_bigbed = Some(String::from("debug_mapped_reads.bb")) }
