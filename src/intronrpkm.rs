@@ -1392,10 +1392,10 @@ fn reannotate_pair(exon1: &Record,
 fn bam2tree(
     bamfile: &str,
     read1strand: &Option<bool>,
-    chrmap: &HashMap<Atom,Atom>,
-    tree: &mut HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>) 
-    -> Result<()> 
+    chrmap: &HashMap<Atom,Atom>) 
+    -> Result<HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>> 
 {
+    let mut tree = HashMap::<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>::new();
     let bam = Reader::from_path(bamfile)?;
     let mut tidmap = HashMap::<u32,Atom>::new();
     {   let header = bam.header();
@@ -1420,7 +1420,7 @@ fn bam2tree(
         let qname = Atom::from(str::from_utf8(read.qname().clone())?);
         t.insert(Interval::new(read.pos() as u64..exons[exons.len()-1].end)?, (qname, exons));
     }
-    Ok(())
+    Ok(tree)
 }
 
 fn reannotate_regions(
@@ -1458,18 +1458,35 @@ fn reannotate_regions(
     let end_plus_bw_histo = Arc::new(end_plus_bw_histo);
     let end_minus_bw_histo = Arc::new(end_minus_bw_histo);
     
-    // read all the bam reads into an interval tree
-    let mut tree: HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>> = HashMap::new();
-    for (i,bamfile) in bamfiles.iter().enumerate() {
-        let read1strand = bamstrand[i];
-        writeln!(stderr(),"Reading bam file {}", bamfile)?;
-        bam2tree(&bamfile,&read1strand,&annot.chrmap, &mut tree)?;
-    }
-    let tree = Arc::new(tree);
-    
-    let mut reannotated = Vec::new();
     let num_cpus = num_cpus::get();
     let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
+    
+    // read all the bam reads into an interval tree
+    let mut trees: HashMap<Atom,HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>> = HashMap::new();
+    let mut futures = Vec::new();
+    for (i,bamfile) in bamfiles.iter().enumerate() {
+        let bamfile = Atom::from(bamfile.clone());
+        let read1strand = bamstrand[i].clone();
+        let chrmap = annot.chrmap.clone();
+        let future = pool.spawn_fn(move ||->Result<(Atom,HashMap<(Atom,Atom),IntervalTree<u64, (Atom,Vec<Range<u64>>)>>)> {
+            writeln!(stderr(),"Reading bam file {}", bamfile)?;
+            Ok((bamfile.clone(), bam2tree(&bamfile,&read1strand,&chrmap)?))
+        });
+        futures.push(future);
+    }
+    for future in futures {
+        match future.wait() {
+            Ok((bamfile,tree)) => {
+                trees.insert(bamfile, tree);
+            }
+            Err(ref e) => {
+                writeln!(stderr(), "Got Err in reannotation: {:?}", e)?;
+            }
+        };
+    }
+    let trees = Arc::new(trees);
+    
+    let mut reannotated = Vec::new();
     let mut pair_futures = Vec::new();
     for pair in pairs {
         let exon1 = &annot.rows[pair.exon1_row];
@@ -1490,7 +1507,7 @@ fn reannotate_regions(
         let end_bw_histogram = 
             if strand_is_plus { end_plus_bw_histo[&chr].clone() }
             else { end_minus_bw_histo[&chr].clone() };
-        let tree = tree.clone();
+        let trees = trees.clone();
         let exon1 = exon1.clone();
         let exon2 = exon2.clone();
                     
@@ -1502,10 +1519,12 @@ fn reannotate_regions(
             //get all the bam reads in parallel
             let mut read_pairs = HashMap::<Atom,Vec<Vec<Range<u64>>>>::new();
             
-            if let Some(t) = tree.get(&(chr,strand.clone())) {
-                for node in t.find(start..end) {
-                    let mut rpexons = read_pairs.entry(node.data().0.clone()).or_insert_with(Vec::new);
-                    rpexons.push(node.data().1.clone());
+            for (_,tree) in trees.iter() {
+                if let Some(t) = tree.get(&(chr.clone(),strand.clone())) {
+                    for node in t.find(start..end) {
+                        let mut rpexons = read_pairs.entry(node.data().0.clone()).or_insert_with(Vec::new);
+                        rpexons.push(node.data().1.clone());
+                    }
                 }
             }
             
