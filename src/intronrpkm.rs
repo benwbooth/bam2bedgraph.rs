@@ -130,8 +130,6 @@ struct Options {
     debug_reannot_bigbed: Option<String>,
     #[structopt(long="debug_rpkm_region_bigbed", help = "Output the rpkm region features as a bigbed file", name="DEBUG_RPKM_REGION_BIGBED_FILE")]
     debug_rpkm_region_bigbed: Option<String>,
-    #[structopt(long="debug_mapped_reads_bigbed", help = "Output the rpkm mapped reads as a bigbed file", name="DEBUG_MAPPED_READS_BIGBED_FILE")]
-    debug_mapped_reads_bigbed: Option<String>,
     #[structopt(long="debug_rpkmstats_json", help = "Dump the RpkmStats to a JSON file", name="DEBUG_RPKMSTATS_JSON")]
     debug_rpkmstats_json: Option<String>,
     #[structopt(long="debug_trackdb", help = "Write a UCSC trackDb.txt file with all the bigwigs/bigbeds", name="DEBUG_TRACKDB_FILE")]
@@ -1534,7 +1532,7 @@ fn write_bigwig(
         chrs.sort_by_key(|a| a.1.as_bytes());
         for (chr, vizchr) in chrs {
             let histo = &histogram[chr];
-            let reflength = refs[vizchr] as usize;
+            let reflength = refs[chr] as usize;
             let mut start = 0usize;
             let mut start_value = 0i32;
             if let Some(start_val) = histo.find(&start) {
@@ -1933,7 +1931,6 @@ fn run() -> Result<()> {
         if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
         if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
         if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(String::from("debug_rpkm.bb")) }
-        if options.debug_mapped_reads_bigbed.is_none() { options.debug_mapped_reads_bigbed = Some(String::from("debug_mapped_reads.bb")) }
         if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(String::from("debug_rpkmstats.json")) }
         if options.debug_trackdb.is_none() { options.debug_trackdb = Some(String::from("trackDb.txt")) }
     }
