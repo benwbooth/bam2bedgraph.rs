@@ -1500,15 +1500,12 @@ fn reannotate_regions(
     if options.debug_bigwig.is_some() { 
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        let vizrefs = annot.refs.iter().
-            map(|(k,v)| (annot.vizchrmap.get(k).unwrap_or(k).clone(), *v)).
-            collect::<LinkedHashMap<String,u64>>();
-        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", true)?;
-        write_bigwig(&start_prefix, &start_plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&end_prefix, &end_plus_bw_histo, &vizrefs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", true)?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
+        write_bigwig(&end_prefix, &end_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
         write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", true)?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, &vizrefs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
-        write_bigwig(&end_prefix, &end_minus_bw_histo, &vizrefs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
+        write_bigwig(&end_prefix, &end_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
     }
     Ok((reannotated,rpkmstats))
 }
@@ -1561,10 +1558,13 @@ fn write_bigwig(
         }
     }
     
+    let vizrefs = refs.iter().
+        map(|(k,v)| (vizchrmap.get(k).unwrap_or(k).clone(), *v)).
+        collect::<LinkedHashMap<String,u64>>();
     // write the genome file
     let genome_filename = format!("{}.{}.bw.genome", file, strand);
     {   let mut genome_fh = File::create(&genome_filename)?;
-        for (chr, length) in refs {
+        for (chr, length) in vizrefs {
             writeln!(genome_fh, "{}\t{}", chr, length)?;
         }
     }
