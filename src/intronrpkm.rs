@@ -1555,10 +1555,7 @@ fn write_bigwig(
                         }
                     }
                     start = i;
-                    start_value = 0i32;
-                    if let Some(v) = histo.find(&start) {
-                        start_value = *v.get();
-                    }
+                    start_value = value;
                 }
             }
         }
