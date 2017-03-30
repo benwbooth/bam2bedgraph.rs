@@ -1710,7 +1710,7 @@ fn compute_rpkm(
             intron_features.push(intron_range);
         }
         else {
-            let intron_range = pair.cassettes[0].range.start..annot.rows[pair.exon1_row].end;
+            let intron_range = annot.rows[pair.exon1_row].end..pair.cassettes[0].range.start;
             for read in mapped_reads.find(&intron_range) {
                 let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                 intron_read.push(read.interval().start..read.interval().end);
