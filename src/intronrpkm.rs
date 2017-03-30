@@ -1702,7 +1702,7 @@ fn compute_rpkm(
         let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
         let mut intron_features = Vec::<Range<u64>>::new();
         if pair.cassettes.is_empty() {
-            let intron_range = annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon1_row].end;
+            let intron_range = annot.rows[pair.exon1_row].end..(annot.rows[pair.exon2_row].start-1);
             for read in mapped_reads.find(&intron_range) {
                 let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                 intron_read.push(read.interval().start..read.interval().end);
@@ -1925,10 +1925,10 @@ fn run() -> Result<()> {
     }
     // set debug options if --debug flag is set
     if options.debug {
-        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
-        if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
-        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
-        if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
+        // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
+        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
+        // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
+        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
         if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(String::from("debug_exon.bb")) }
         if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
         if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
