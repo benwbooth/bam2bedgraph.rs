@@ -1723,6 +1723,7 @@ fn write_rpkm_stats(
         else { Box::new(File::create(outfile)?) });
         
     // sort by intron_rpkm / max_exon_rpkm, descending
+    let unknown = String::from("unknown");
     rpkmstats.sort_by(|a, b| 
         ((b.intron_rpkm/b.max_cassette_rpkm).is_finite()).
             cmp(&((a.intron_rpkm/a.max_cassette_rpkm).is_finite())).
@@ -1733,22 +1734,16 @@ fn write_rpkm_stats(
             let gene_name1 = 
                 gene1.attributes.get("gene_name").or_else(||
                 gene1.attributes.get("Name").or_else(||
-                gene1.attributes.get("ID")));
-            let gene_name1 = match gene_name1 {
-                Some(g) => g.clone(),
-                None => String::from(format!("{}:{}..{}:{}", 
-                    gene1.seqname, gene1.start-1, gene1.end, gene1.strand)),
-            };
+                gene1.attributes.get("ID"))).unwrap_or(&unknown);
+            let gene_name1 = format!("{}:{}:{}..{}:{}", 
+                    gene_name1, gene1.seqname, gene1.start-1, gene1.end, gene1.strand);
             let gene2 = &annot.rows[b.gene_row];
             let gene_name2 = 
                 gene2.attributes.get("gene_name").or_else(||
                 gene2.attributes.get("Name").or_else(||
-                gene2.attributes.get("ID")));
-            let gene_name2 = match gene_name2 {
-                Some(g) => g.clone(),
-                None => String::from(format!("{}:{}..{}:{}", 
-                    gene2.seqname, gene2.start-1, gene2.end, gene2.strand)),
-            };
+                gene2.attributes.get("ID"))).unwrap_or(&unknown);
+            let gene_name2 = format!("{}:{}:{}..{}:{}", 
+                    gene_name2, gene2.seqname, gene2.start-1, gene2.end, gene2.strand);
             gene_name1.cmp(&gene_name2)
         }));
         
@@ -1767,12 +1762,9 @@ fn write_rpkm_stats(
         let gene_name = 
             gene.attributes.get("gene_name").or_else(||
             gene.attributes.get("Name").or_else(||
-            gene.attributes.get("ID")));
-        let gene_name = match gene_name {
-            Some(g) => g.clone(),
-            None => String::from(format!("{}:{}..{}:{}", 
-                gene.seqname, gene.start-1, gene.end, gene.strand)),
-        };
+            gene.attributes.get("ID"))).unwrap_or(&unknown);
+        let gene_name = format!("{}:{}:{}..{}:{}", 
+                gene_name, gene.seqname, gene.start-1, gene.end, gene.strand);
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
