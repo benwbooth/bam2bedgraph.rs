@@ -15,6 +15,10 @@ use std::io::{stdout, stderr, sink};
 use std::path::Path;
 use std::sync::Arc;
 
+extern crate bam2bedgraph;
+use bam2bedgraph::errors::*;
+use bam2bedgraph::cigar2exons;
+
 #[macro_use] 
 extern crate lazy_static;
 
@@ -39,10 +43,6 @@ extern crate structopt;
 extern crate structopt_derive;
 use structopt::StructOpt;
 
-extern crate bam2bedgraph;
-use bam2bedgraph::errors::*;
-use bam2bedgraph::cigar2exons;
-
 extern crate linked_hash_map;
 use linked_hash_map::LinkedHashMap;
 
@@ -54,8 +54,6 @@ extern crate serde_json;
 
 extern crate itertools;
 use itertools::Itertools;
-
-extern crate string_cache;
 
 extern crate concurrent_hashmap;
 use concurrent_hashmap::*;
