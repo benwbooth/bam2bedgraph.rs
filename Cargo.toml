@@ -22,6 +22,7 @@ futures = "*"
 futures-cpupool = "*"
 num_cpus = "*"
 ordered-float = "*"
+duct = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"

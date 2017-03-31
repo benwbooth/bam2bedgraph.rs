@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::process::Command;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
@@ -70,6 +69,9 @@ extern crate num_cpus;
 
 extern crate ordered_float;
 use ordered_float::OrderedFloat;
+
+#[macro_use]
+extern crate duct;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
@@ -776,14 +778,7 @@ impl IndexedAnnotation {
         }
         
         // sort the bed file
-        let mut command = Command::new("sort");
-        command.args(&["-k1,1","-k2,2n","-o", &bed_file, &unsorted_bed_file]);
-        command.env("LC_COLLATE", "C");
-        let status = command.spawn()?.wait()?;
-        if !status.success() {
-            return Err(format!(
-                "Exit code {:?} returned from command {:?}", status.code(), command).into());
-        }
+        cmd!("sort","-k1,1","-k2,2n","-o",&bed_file,&unsorted_bed_file).env("LC_COLLATE","C").run()?;
         // remove the unsorted bed file
         std::fs::remove_file(&unsorted_bed_file)?;
         
@@ -812,13 +807,7 @@ impl IndexedAnnotation {
         }
         
         // call bedToBigBed
-        let mut command = Command::new("bedToBigBed");
-        command.args(&["-type=bed12", "-tab", "extraIndex=name", &bed_file, &genome_filename, file]);
-        let status = command.spawn()?.wait()?;
-        if !status.success() {
-            return Err(format!(
-                "Exit code {:?} returned from command {:?}", status.code(), command).into());
-        }
+        cmd!("bedToBigBed","-type=bed12","-tab","-extraIndex=name", &bed_file, &genome_filename, &file).run()?;
         // remove the bed file
         std::fs::remove_file(&bed_file)?;
         // remove the genome file
@@ -1021,26 +1010,14 @@ fn bed2bigbed(
     // sort the bed file
     let sorted_bed_file = format!("{}.sorted.bed", bed_file);
     if sort_bed {
-        let mut command = Command::new("sort");
-        command.args(&["-k1,1","-k2,2n","-o", &sorted_bed_file, bed_file]);
-        command.env("LC_COLLATE", "C");
-        let status = command.spawn()?.wait()?;
-        if !status.success() {
-            return Err(format!(
-                "Exit code {:?} returned from command {:?}", status.code(), command).into());
-        }
+        cmd!("sort","-k1,1","-k2,2n","-o",&sorted_bed_file,&bed_file).env("LC_COLLATE","C").run()?;
     }
     
     // call bedToBigBed
-    let mut command = Command::new("bedToBigBed");
-    command.args(&["-type=bed12", "-tab", "extraIndex=name", 
-        if sort_bed {&sorted_bed_file} else {bed_file}, 
-        &genome_filename, bigbed_file]);
-    let status = command.spawn()?.wait()?;
-    if !status.success() {
-        return Err(format!(
-            "Exit code {:?} returned from command {:?}", status.code(), command).into());
-    }
+    cmd!("bedToBigBed","-type=bed12","-tab","-extraIndex=name",
+        if sort_bed {&sorted_bed_file} else {bed_file},
+        &genome_filename,
+        &bigbed_file).run()?;
     // remove the bed file
     if remove_bed { std::fs::remove_file(&bed_file)?; }
     if remove_bed && sort_bed { std::fs::remove_file(&sorted_bed_file)?; }
@@ -1562,13 +1539,7 @@ fn write_bigwig(
     
     // call bedGraphToBigWig
     let bigwig_file = format!("{}.{}.bw", file, strand);
-    let mut command = Command::new("bedGraphToBigWig");
-    command.args(&[&bedgraph_file, &genome_filename, &bigwig_file]);
-    let status = command.spawn()?.wait()?;
-    if !status.success() {
-        return Err(format!(
-            "Exit code {:?} returned from command {:?}", status.code(), command).into());
-    }
+    cmd!("bedGraphToBigWig",&bedgraph_file,&genome_filename,&bigwig_file).run()?;
     // remove the bedgraph file
     std::fs::remove_file(&bedgraph_file)?;
     // remove the genome file
@@ -1612,14 +1583,7 @@ fn write_bigwig(
 fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
     let mut total_reads = 0u64;
     for bamfile in bamfiles {
-        let mut cmd = Command::new("samtools");
-        cmd.args(&["idxstats",bamfile]);
-        let output = cmd.output()?;
-        if !output.status.success() {
-            return Err(format!("Command {:?} returned exit status {}", 
-                cmd, output.status.code().unwrap_or(-1)).into());
-        }
-        let stdout = String::from_utf8(output.stdout)?;
+        let stdout = cmd!("samtools","idxstats",bamfile).read()?;
         for line in stdout.lines() {
             let cols: Vec<&str> = line.split('\t').collect();
             if let Some(reads_str) = cols.get(2) {

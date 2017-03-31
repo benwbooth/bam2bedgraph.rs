@@ -6,7 +6,6 @@ use std::io::stderr;
 use std::fs::File;
 use std::str;
 use std::path::{PathBuf, Path};
-use std::process::Command;
 use std::vec::Vec;
 use std::ops::Range;
 
@@ -30,6 +29,9 @@ use structopt::StructOpt;
 extern crate bam2bedgraph;
 use bam2bedgraph::errors::*;
 use bam2bedgraph::cigar2exons;
+
+#[macro_use]
+extern crate duct;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "bam2bedgraph", about = "Convert bam files to bedgraph/bigWig format")]
@@ -472,26 +474,8 @@ fn analyze_bam(options: &Options,
             let regex = Regex::new(r"\.bedgraph$")?;
             let bigwig_file = String::from(regex.replace(fh.0, ".bw"));
             let sorted_bedgraph = String::from(regex.replace(fh.0, ".sorted.bedgraph"));
-            for command in vec![Command::new("sort")
-                                    .args(&["-k1,1", "-k2,2n", "-o", &sorted_bedgraph, fh.0])
-                                    .env("LC_COLLATE", "C"),
-                                Command::new("bedGraphToBigWig")
-                                    .args(&[&sorted_bedgraph, &genome_filename, &bigwig_file])] {
-                let mut child = command.spawn()?;
-                let exit_code = child.wait()?;
-                if !exit_code.success() {
-                    if exit_code.code().is_some() {
-                        let code = exit_code.code().r()?;
-                        return Err(format!("Nonzero exit code {} returned from \
-                                                       command: {:?}",
-                                           code,
-                                           command)
-                            .into());
-                    } else {
-                        return Err(format!("Command was interrupted: {:?}", command).into());
-                    }
-                }
-            }
+            cmd!("sort","-k1,1","-k2,2n","-o", &sorted_bedgraph, fh.0).env("LC_COLLATE","C").run()?;
+            cmd!("bedGraphToBigWig",&sorted_bedgraph,&genome_filename,&bigwig_file).run()?;
             // remove the bedgraph file
             std::fs::remove_file(fh.0)?;
             // remove the sorted bedgraph file
