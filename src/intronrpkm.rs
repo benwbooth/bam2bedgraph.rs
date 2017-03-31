@@ -1734,7 +1734,7 @@ fn write_rpkm_stats(
                 gene1.attributes.get("gene_name").or_else(||
                 gene1.attributes.get("Name").or_else(||
                 gene1.attributes.get("ID")));
-            let gene2 = &annot.rows[a.gene_row];
+            let gene2 = &annot.rows[b.gene_row];
             let gene_name2 = 
                 gene2.attributes.get("gene_name").or_else(||
                 gene2.attributes.get("Name").or_else(||
