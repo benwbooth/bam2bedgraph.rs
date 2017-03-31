@@ -1735,26 +1735,26 @@ fn write_rpkm_stats(
                 gene1.attributes.get("gene_name").or_else(||
                 gene1.attributes.get("Name").or_else(||
                 gene1.attributes.get("ID"))).unwrap_or(&unknown);
-            let gene_name1 = format!("{}:{}:{}..{}:{}", 
+            let pair_name1 = format!("{}:{}:{}..{}:{}", 
                     gene_name1, gene1.seqname, gene1.start-1, gene1.end, gene1.strand);
             let gene2 = &annot.rows[b.gene_row];
             let gene_name2 = 
                 gene2.attributes.get("gene_name").or_else(||
                 gene2.attributes.get("Name").or_else(||
                 gene2.attributes.get("ID"))).unwrap_or(&unknown);
-            let gene_name2 = format!("{}:{}:{}..{}:{}", 
+            let pair_name2 = format!("{}:{}:{}..{}:{}", 
                     gene_name2, gene2.seqname, gene2.start-1, gene2.end, gene2.strand);
-            gene_name1.cmp(&gene_name2)
+            pair_name1.cmp(&pair_name2)
         }));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
-        "gene_name",
+        "constituitive_pair_name",
+        "intron_rpkm/max_cassette_rpkm",
         "intron_rpkm",
         "max_cassette_rpkm",
         "total_constituitive_rpkm",
         "total_cassette_rpkm",
-        "intron_rpkm/max_cassette_rpkm",
     ))?;
     for rpkm in rpkmstats {
         let gene = &annot.rows[rpkm.gene_row];
@@ -1763,17 +1763,17 @@ fn write_rpkm_stats(
             gene.attributes.get("gene_name").or_else(||
             gene.attributes.get("Name").or_else(||
             gene.attributes.get("ID"))).unwrap_or(&unknown);
-        let gene_name = format!("{}:{}:{}..{}:{}", 
+        let pair_name = format!("{}:{}:{}..{}:{}", 
                 gene_name, gene.seqname, gene.start-1, gene.end, gene.strand);
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
-            gene_name, 
+            pair_name, 
+            ratio,
             rpkm.intron_rpkm, 
             rpkm.max_cassette_rpkm, 
             rpkm.total_constituitive_rpkm, 
-            rpkm.total_cassette_rpkm, 
-            ratio))?;
+            rpkm.total_cassette_rpkm))?;
     }
     Ok(())
 }
