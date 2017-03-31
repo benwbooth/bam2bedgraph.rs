@@ -733,8 +733,10 @@ impl IndexedAnnotation {
                             if cdss.is_empty() { cdss.push(start..start) }
                             for cds in cdss {
                                 // choose a unique transcript name
-                                let transcript_name = transcript.attributes.get("Name").or_else(||
-                                    transcript.attributes.get("ID"));
+                                let transcript_name = 
+                                    transcript.attributes.get("transcript_name").or_else(||
+                                    transcript.attributes.get("Name").or_else(||
+                                    transcript.attributes.get("ID")));
                                 let mut transcript_name = match transcript_name {
                                     Some(t) => t.clone(),
                                     None => String::from(format!("{}:{}..{}:{}", 
@@ -1756,8 +1758,10 @@ fn write_rpkm_stats(
         
     // sort by intron_rpkm / max_exon_rpkm, descending
     rpkmstats.sort_by(|a, b| 
-        (a.intron_rpkm.is_nan()).cmp(&b.intron_rpkm.is_nan()).
-        then_with(|| OrderedFloat(b.intron_rpkm).cmp(&OrderedFloat(a.intron_rpkm))));
+        ((b.intron_rpkm/a.max_cassette_rpkm).is_finite()).
+            cmp(&((a.intron_rpkm/b.max_cassette_rpkm).is_finite())).
+        then_with(|| OrderedFloat(b.intron_rpkm/b.max_cassette_rpkm).
+            cmp(&OrderedFloat(a.intron_rpkm/a.max_cassette_rpkm))));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
@@ -1771,8 +1775,10 @@ fn write_rpkm_stats(
     for rpkm in rpkmstats {
         let gene = &annot.rows[rpkm.gene_row];
         
-        let gene_name = gene.attributes.get("Name").or_else(||
-            gene.attributes.get("ID"));
+        let gene_name = 
+            gene.attributes.get("gene_name").or_else(||
+            gene.attributes.get("Name").or_else(||
+            gene.attributes.get("ID")));
         let gene_name = match gene_name {
             Some(g) => g.clone(),
             None => String::from(format!("{}:{}..{}:{}", 
@@ -1797,7 +1803,10 @@ fn get_pair_name(pair: &ConstituitivePair, annot: Arc<IndexedAnnotation>) -> Str
     for transcript_row in &annot.row2parents[&pair.exon1_row] {
         for gene_row in &annot.row2parents[transcript_row] {
             if annot.rows[*gene_row].feature_type == *"gene" {
-                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
+                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("gene_name") {
+                    gene_id = Some(gene_name_attr);
+                    break 'FIND_GENE_ID;
+                } else if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
                     gene_id = Some(gene_name_attr);
                     break 'FIND_GENE_ID;
                 } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get("ID") {
@@ -1806,7 +1815,10 @@ fn get_pair_name(pair: &ConstituitivePair, annot: Arc<IndexedAnnotation>) -> Str
                 }
             }
         }
-        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
+        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("transcript_name") {
+            gene_id = Some(transcript_name_attr);
+            break 'FIND_GENE_ID;
+        } else if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
             gene_id = Some(transcript_name_attr);
             break 'FIND_GENE_ID;
         } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get("ID") {
@@ -1815,10 +1827,12 @@ fn get_pair_name(pair: &ConstituitivePair, annot: Arc<IndexedAnnotation>) -> Str
         }
     }
     gene_id = gene_id.or_else(||
+        annot.rows[pair.exon1_row].attributes.get("gene_name").or_else(||
         annot.rows[pair.exon1_row].attributes.get("gene_id").or_else(||
+        annot.rows[pair.exon1_row].attributes.get("transcript_name").or_else(||
         annot.rows[pair.exon1_row].attributes.get("transcript_id").or_else(||
         annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
-        annot.rows[pair.exon1_row].attributes.get("ID")))));
+        annot.rows[pair.exon1_row].attributes.get("ID")))))));
     // format the feature name    
     let name = format!("{}{}:{}..{}:{}", 
         match gene_id {
