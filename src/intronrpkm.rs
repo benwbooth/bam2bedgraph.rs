@@ -1734,11 +1734,21 @@ fn write_rpkm_stats(
                 gene1.attributes.get("gene_name").or_else(||
                 gene1.attributes.get("Name").or_else(||
                 gene1.attributes.get("ID")));
+            let gene_name1 = match gene_name1 {
+                Some(g) => g.clone(),
+                None => String::from(format!("{}:{}..{}:{}", 
+                    gene1.seqname, gene1.start-1, gene1.end, gene1.strand)),
+            };
             let gene2 = &annot.rows[b.gene_row];
             let gene_name2 = 
                 gene2.attributes.get("gene_name").or_else(||
                 gene2.attributes.get("Name").or_else(||
                 gene2.attributes.get("ID")));
+            let gene_name2 = match gene_name2 {
+                Some(g) => g.clone(),
+                None => String::from(format!("{}:{}..{}:{}", 
+                    gene2.seqname, gene2.start-1, gene2.end, gene2.strand)),
+            };
             gene_name1.cmp(&gene_name2)
         }));
         
