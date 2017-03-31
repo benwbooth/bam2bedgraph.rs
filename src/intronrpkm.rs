@@ -829,6 +829,7 @@ impl IndexedAnnotation {
             itemRgb On
             visibility hide
         "##), track_name, url, track_name, track_name))?;
+        trackdb.flush()?;
         
         Ok(())
     }
@@ -1041,6 +1042,7 @@ fn bed2bigbed(
         itemRgb On
         visibility hide
     "##), track_name, url, track_name, track_name))?;
+    trackdb.flush()?;
         
     Ok(())
 }
@@ -1567,6 +1569,7 @@ fn write_bigwig(
             viewLimits {}
             priority 1
             "##), parent, parent, parent, viewlimits))?;
+        trackdb.flush()?;
     }
     trackdb.write_fmt(format_args!(r##"
     track {}
@@ -1576,6 +1579,7 @@ fn write_bigwig(
     parent {}
     bigDataUrl {}
     "##, track_name, track_name, track_name, parent, url))?;
+    trackdb.flush()?;
     
     Ok(())
 }
