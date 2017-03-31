@@ -1754,7 +1754,8 @@ fn write_rpkm_stats(
         
     // sort by intron_rpkm / max_exon_rpkm, descending
     rpkmstats.sort_by(|a, b|
-        (b.intron_rpkm / b.max_cassette_rpkm).partial_cmp(&(a.intron_rpkm / a.max_cassette_rpkm)).unwrap_or(Less));
+        (b.intron_rpkm / b.max_cassette_rpkm).
+        partial_cmp(&(a.intron_rpkm / a.max_cassette_rpkm)).unwrap_or(Less));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
@@ -1845,7 +1846,7 @@ fn write_exon_bigbed(
             let name = get_pair_name(pair, annot.clone());
             // write the bed record
             let score = 0;
-            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
+            let item_rgb = [0,0,0].iter().map(|v| v.to_string()).join(",");
             let mut block_sizes = Vec::<u64>::new();
             let mut block_starts = Vec::<u64>::new();
             block_sizes.push(annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1);
@@ -1871,7 +1872,7 @@ fn write_exon_bigbed(
                 &annot.rows[pair.exon2_row].strand,
                 &thick_start,
                 &thick_end,
-                item_rgb,
+                &item_rgb,
                 &(pair.cassettes.len()+2).to_string(),
                 &block_sizes.iter().map(|v| v.to_string()).join(","),
                 &block_starts.iter().map(|v| v.to_string()).join(","),
