@@ -350,13 +350,11 @@ impl IndexedAnnotation {
         let mut rows = Vec::<Record>::new();
         let f = File::open(&annotfile)?;
         let file = BufReader::new(&f);
-        let id_atom = String::from("ID");
-        let name_atom = String::from("Name");
         let mut refs = HashMap::<String,u64>::new();
         for line in file.lines() {
             let row = rows.len();
             if let Ok(record) = Record::from_row(row, &line?, filetype, &chrmap) {
-                if let Some(id) = record.attributes.get(&id_atom) {
+                if let Some(id) = record.attributes.get("ID") {
                     id2row.insert(id.clone(), row);
                 }
                 // get the max ref lengths
@@ -378,10 +376,6 @@ impl IndexedAnnotation {
         let mut row2children = HashMap::<usize, BTreeSet<usize>>::new();
         // make fake rows for GTF gene_id and transcript_id attributes
         let mut fake_rows = Vec::<Record>::new();
-        let transcript_id_atom = String::from("transcript_id");
-        let transcript_name_atom = String::from("transcript_name");
-        let gene_id_atom = String::from("gene_id");
-        let gene_name_atom = String::from("gene_name");
         
         match filetype {
             "gtf" => {
@@ -390,14 +384,14 @@ impl IndexedAnnotation {
                     // in GTF, if two rows both have identical fields (except attributes), they
                     // are the same feature.
                     let row = *firstrow.entry(record).or_insert(row);
-                    if let Some(transcript_id) = record.attributes.get(&transcript_id_atom) {
+                    if let Some(transcript_id) = record.attributes.get("transcript_id") {
                         let mut transcript_record = Record::new();
                         transcript_record.feature_type = String::from(transcript_type);
                         transcript_record.attributes
-                            .insert(id_atom.clone(), transcript_id.clone());
-                        if let Some(transcript_name) = record.attributes.get(&transcript_name_atom) {
+                            .insert(String::from("ID"), transcript_id.clone());
+                        if let Some(transcript_name) = record.attributes.get("transcript_name") {
                             transcript_record.attributes
-                                .insert(name_atom.clone(), transcript_name.clone());
+                                .insert(String::from("Name"), transcript_name.clone());
                         }
                         let transcriptrow = rows.len() + fake_rows.len();
                         id2row.insert(transcript_id.clone(), transcriptrow);
@@ -407,13 +401,13 @@ impl IndexedAnnotation {
                             .insert(row);
                         fake_rows.push(transcript_record);
 
-                        if let Some(gene_id) = record.attributes.get(&gene_id_atom) {
+                        if let Some(gene_id) = record.attributes.get("gene_id") {
                             let mut gene_record = Record::new();
                             gene_record.feature_type = String::from(gene_type);
-                            gene_record.attributes.insert(id_atom.clone(), gene_id.clone());
-                            if let Some(gene_name) = record.attributes.get(&gene_name_atom) {
+                            gene_record.attributes.insert(String::from("ID"), gene_id.clone());
+                            if let Some(gene_name) = record.attributes.get("gene_name") {
                                 gene_record.attributes
-                                    .insert(name_atom.clone(), gene_name.clone());
+                                    .insert(String::from("Name"), gene_name.clone());
                             }
                             let generow = rows.len() + fake_rows.len();
                             id2row.insert(gene_id.clone(), generow);
@@ -429,9 +423,8 @@ impl IndexedAnnotation {
                 }
             }
             "gff" => {
-                let parent_atom = String::from("Parent");
                 for (row, record) in rows.iter().enumerate() {
-                    if let Some(parent) = record.attributes.get(&parent_atom) {
+                    if let Some(parent) = record.attributes.get("Parent") {
                         for p in parent.split(',') {
                             if let Some(parentrow) = id2row.get(&String::from(p)) {
                                 row2parents.entry(row)
@@ -571,18 +564,15 @@ impl IndexedAnnotation {
             if filename == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(filename)?) });
             
-        let id_atom = String::from("ID");
-        let gene_id_atom = String::from("gene_id");
-        let transcript_id_atom = String::from("transcript_id");
         for (row, record) in self.rows.iter().enumerate() {
             if let Some(transcript_rows) = self.row2parents.get(&row) {
                 for transcript_row in transcript_rows {
                     let transcript = &self.rows[*transcript_row];
-                    if let Some(transcript_id) = transcript.attributes.get(&id_atom) {
+                    if let Some(transcript_id) = transcript.attributes.get("ID") {
                         if let Some(gene_rows) = self.row2parents.get(transcript_row) {
                             for gene_row in gene_rows {
                                 let gene = &self.rows[*gene_row];
-                                if let Some(gene_id) = gene.attributes.get(&id_atom) {
+                                if let Some(gene_id) = gene.attributes.get("ID") {
                                     let mut rec = Record {
                                         row: row,
                                         seqname: record.seqname.clone(),
@@ -595,8 +585,8 @@ impl IndexedAnnotation {
                                         frame: record.frame.clone(),
                                         attributes: LinkedHashMap::new(),
                                     };
-                                    rec.attributes.insert(gene_id_atom.clone(), gene_id.clone());
-                                    rec.attributes.insert(transcript_id_atom.clone(), transcript_id.clone());
+                                    rec.attributes.insert(String::from("gene_id"), gene_id.clone());
+                                    rec.attributes.insert(String::from("transcript_id"), transcript_id.clone());
                                     for (k,v) in &record.attributes {
                                         if k != "gene_id" && k != "transcript_id" {
                                             rec.attributes.insert(k.clone(), v.clone());
@@ -618,7 +608,6 @@ impl IndexedAnnotation {
             if filename == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(filename)?) });
             
-        let id_atom = String::from("ID");
         for (row, record) in self.rows.iter().enumerate() {
             let mut rec = Record {
                 row: row,
@@ -636,7 +625,7 @@ impl IndexedAnnotation {
             if let Some(parent_rows) = self.row2parents.get(&row) {
                 for parent_row in parent_rows {
                     let parent = &self.rows[*parent_row];
-                    if let Some(parent_id) = parent.attributes.get(&id_atom) {
+                    if let Some(parent_id) = parent.attributes.get("ID") {
                         parents.push(parent_id.clone());
                     }
                 }
@@ -677,8 +666,6 @@ impl IndexedAnnotation {
         let mut seen_transcript = HashSet::<usize>::new();
         let mut transcript_names = HashSet::<String>::new();
         
-        let id_atom = String::from("ID");
-        let name_atom = String::from("Name");
         let unsorted_bed_file = format!("{}.unsorted.bed", bed_file);
         {   let mut bw = BufWriter::new(File::create(&unsorted_bed_file)?);
             let mut chrs = self.tree.keys().collect::<Vec<_>>();
@@ -744,8 +731,8 @@ impl IndexedAnnotation {
                             if cdss.is_empty() { cdss.push(start..start) }
                             for cds in cdss {
                                 // choose a unique transcript name
-                                let transcript_name = transcript.attributes.get(&id_atom).or_else(||
-                                    transcript.attributes.get(&name_atom));
+                                let transcript_name = transcript.attributes.get("ID").or_else(||
+                                    transcript.attributes.get("Name"));
                                 let mut transcript_name = match transcript_name {
                                     Some(t) => t.clone(),
                                     None => String::from(format!("{}:{}..{}:{}", 
@@ -1780,7 +1767,14 @@ fn write_rpkm_stats(
     ))?;
     for rpkm in rpkmstats {
         let gene = &annot.rows[rpkm.gene_row];
-        let gene_name = &gene.seqname;
+        
+        let gene_name = gene.attributes.get("ID").or_else(||
+            gene.attributes.get("Name"));
+        let gene_name = match gene_name {
+            Some(g) => g.clone(),
+            None => String::from(format!("{}:{}..{}:{}", 
+                gene.seqname, gene.start-1, gene.end, gene.strand)),
+        };
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
@@ -1796,36 +1790,32 @@ fn write_rpkm_stats(
 
 fn get_pair_name(pair: &ConstituitivePair, annot: Arc<IndexedAnnotation>) -> String {
     let mut gene_id = None;
-    let id_atom = String::from("ID");
-    let name_atom = String::from("Name");
-    let gene_id_atom = String::from("gene_id");
-    let transcript_id_atom = String::from("transcript_id");
     'FIND_GENE_ID:
     for transcript_row in &annot.row2parents[&pair.exon1_row] {
         for gene_row in &annot.row2parents[transcript_row] {
             if annot.rows[*gene_row].feature_type == *"gene" {
-                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get(&name_atom) {
+                if let Some(gene_name_attr) = annot.rows[*gene_row].attributes.get("Name") {
                     gene_id = Some(gene_name_attr);
                     break 'FIND_GENE_ID;
-                } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get(&id_atom) {
+                } else if let Some(gene_id_attr) = annot.rows[*gene_row].attributes.get("ID") {
                     gene_id = Some(gene_id_attr);
                     break 'FIND_GENE_ID;
                 }
             }
         }
-        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get(&name_atom) {
+        if let Some(transcript_name_attr) = annot.rows[*transcript_row].attributes.get("Name") {
             gene_id = Some(transcript_name_attr);
             break 'FIND_GENE_ID;
-        } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get(&id_atom) {
+        } else if let Some(transcript_id_attr) = annot.rows[*transcript_row].attributes.get("ID") {
             gene_id = Some(transcript_id_attr);
             break 'FIND_GENE_ID;
         }
     }
     gene_id = gene_id.or_else(||
-        annot.rows[pair.exon1_row].attributes.get(&gene_id_atom).or_else(||
-        annot.rows[pair.exon1_row].attributes.get(&transcript_id_atom).or_else(||
-        annot.rows[pair.exon1_row].attributes.get(&name_atom).or_else(|| 
-        annot.rows[pair.exon1_row].attributes.get(&id_atom)))));
+        annot.rows[pair.exon1_row].attributes.get("gene_id").or_else(||
+        annot.rows[pair.exon1_row].attributes.get("transcript_id").or_else(||
+        annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
+        annot.rows[pair.exon1_row].attributes.get("ID")))));
     // format the feature name    
     let name = format!("{}{}:{}..{}:{}", 
         match gene_id {
