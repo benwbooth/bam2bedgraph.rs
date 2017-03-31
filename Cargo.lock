@@ -13,6 +13,7 @@ dependencies = [
  "lazy_static 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "linked-hash-map 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "num_cpus 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ordered-float 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rust-htslib 0.10.0 (git+https://github.com/rust-bio/rust-htslib.git)",
  "serde 0.9.12 (registry+https://github.com/rust-lang/crates.io-index)",

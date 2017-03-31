@@ -10,7 +10,6 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::process::Command;
-use std::cmp::Ordering::Less;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
@@ -68,6 +67,9 @@ extern crate futures_cpupool;
 use futures_cpupool::CpuPool;
 
 extern crate num_cpus;
+
+extern crate ordered_float;
+use ordered_float::OrderedFloat;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
@@ -731,8 +733,8 @@ impl IndexedAnnotation {
                             if cdss.is_empty() { cdss.push(start..start) }
                             for cds in cdss {
                                 // choose a unique transcript name
-                                let transcript_name = transcript.attributes.get("ID").or_else(||
-                                    transcript.attributes.get("Name"));
+                                let transcript_name = transcript.attributes.get("Name").or_else(||
+                                    transcript.attributes.get("ID"));
                                 let mut transcript_name = match transcript_name {
                                     Some(t) => t.clone(),
                                     None => String::from(format!("{}:{}..{}:{}", 
@@ -1753,9 +1755,7 @@ fn write_rpkm_stats(
         else { Box::new(File::create(outfile)?) });
         
     // sort by intron_rpkm / max_exon_rpkm, descending
-    rpkmstats.sort_by(|a, b|
-        (b.intron_rpkm / b.max_cassette_rpkm).
-        partial_cmp(&(a.intron_rpkm / a.max_cassette_rpkm)).unwrap_or(Less));
+    rpkmstats.sort_by(|a, b| OrderedFloat(b.intron_rpkm).cmp(&OrderedFloat(a.intron_rpkm)));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
@@ -1769,8 +1769,8 @@ fn write_rpkm_stats(
     for rpkm in rpkmstats {
         let gene = &annot.rows[rpkm.gene_row];
         
-        let gene_name = gene.attributes.get("ID").or_else(||
-            gene.attributes.get("Name"));
+        let gene_name = gene.attributes.get("Name").or_else(||
+            gene.attributes.get("ID"));
         let gene_name = match gene_name {
             Some(g) => g.clone(),
             None => String::from(format!("{}:{}..{}:{}", 

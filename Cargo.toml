@@ -21,6 +21,7 @@ concurrent-hashmap = "*"
 futures = "*"
 futures-cpupool = "*"
 num_cpus = "*"
+ordered-float = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
