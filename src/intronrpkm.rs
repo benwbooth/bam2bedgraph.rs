@@ -1722,10 +1722,23 @@ fn write_rpkm_stats(
         
     // sort by intron_rpkm / max_exon_rpkm, descending
     rpkmstats.sort_by(|a, b| 
-        ((b.intron_rpkm/a.max_cassette_rpkm).is_finite()).
-            cmp(&((a.intron_rpkm/b.max_cassette_rpkm).is_finite())).
+        ((b.intron_rpkm/b.max_cassette_rpkm).is_finite()).
+            cmp(&((a.intron_rpkm/a.max_cassette_rpkm).is_finite())).
         then_with(|| OrderedFloat(b.intron_rpkm/b.max_cassette_rpkm).
-            cmp(&OrderedFloat(a.intron_rpkm/a.max_cassette_rpkm))));
+            cmp(&OrderedFloat(a.intron_rpkm/a.max_cassette_rpkm))).
+        then_with(|| {
+            let gene1 = &annot.rows[a.gene_row];
+            let gene_name1 = 
+                gene1.attributes.get("gene_name").or_else(||
+                gene1.attributes.get("Name").or_else(||
+                gene1.attributes.get("ID")));
+            let gene2 = &annot.rows[a.gene_row];
+            let gene_name2 = 
+                gene2.attributes.get("gene_name").or_else(||
+                gene2.attributes.get("Name").or_else(||
+                gene2.attributes.get("ID")));
+            gene_name1.cmp(&gene_name2)
+        }));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
