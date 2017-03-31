@@ -1755,7 +1755,9 @@ fn write_rpkm_stats(
         else { Box::new(File::create(outfile)?) });
         
     // sort by intron_rpkm / max_exon_rpkm, descending
-    rpkmstats.sort_by(|a, b| OrderedFloat(b.intron_rpkm).cmp(&OrderedFloat(a.intron_rpkm)));
+    rpkmstats.sort_by(|a, b| 
+        (a.intron_rpkm.is_nan()).cmp(&b.intron_rpkm.is_nan()).
+        then_with(|| OrderedFloat(b.intron_rpkm).cmp(&OrderedFloat(a.intron_rpkm))));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
