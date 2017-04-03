@@ -1509,14 +1509,14 @@ fn write_bigwig(
                     value = *v.get();
                 }
                 if value != start_value {
-                    if value > 0i32 {
+                    if start_value > 0i32 {
                         if strand == "-" {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, i, -(value as i64))?;
+                                     vizchr, start, i, -(start_value as i64))?;
                         }
                         else {
                             writeln!(bw, "{}\t{}\t{}\t{}\n",
-                                     vizchr, start, i, value)?;
+                                     vizchr, start, i, start_value)?;
                         }
                     }
                     start = i;
@@ -1766,6 +1766,7 @@ fn write_rpkm_stats(
         let pair_name = format!("{}:{}:{}..{}:{}", 
                 gene_name, gene.seqname, gene.start-1, gene.end, gene.strand);
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
+        if !ratio.is_finite() { continue }
         
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
             pair_name, 
