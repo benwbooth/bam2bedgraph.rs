@@ -1138,66 +1138,55 @@ fn reannotate_pair(exon1: &Record,
             for exon in exons {
                 //writeln!(stderr(), "Looking at exon {:?}", exon)?;
                 mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
-                for pos in exon.start..exon.end {
-                    if start <= (pos as usize) && (pos as usize) < end {
-                        histo[pos as usize - start] += 1;
-                        if debug_bigwig.is_some() {
-                            bw_histogram.upsert(pos as usize, 0i32, &|v| *v += 1);
-                        }
+                for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
+                    histo[pos as usize - start] += 1;
+                    if debug_bigwig.is_some() {
+                        bw_histogram.upsert(pos as usize, 0i32, &|v| *v += 1);
                     }
                 }
             }
             
             // write the start/stop histograms
-            let matches_splice = exons.iter().enumerate().any(|(i,exon)| 
-                (i < exons.len()-1 && exon.end == exon1.end) || 
-                (i > 0 && exon.start == exon2.start-1));
-            if matches_splice {
-                for (i, exon) in exons.iter().enumerate() {
-                    //writeln!(stderr(), "Writing start/stop histo for exon {:?}", exon)?;
-                    // write start/stop histograms
+            for (i, exon) in exons.iter().enumerate() {
+                //writeln!(stderr(), "Writing start/stop histo for exon {:?}", exon)?;
+                // write start/stop histograms
+                if i > 0 {
+                    if start <= (exon.start as usize) && (exon.start as usize) < end {
+                        start_histo[exon.start as usize - start] += 1;
+                    }
+                }
+                if i < exons.len()-1 {
+                    if start <= (exon.end as usize) && (exon.end as usize) < end {
+                        end_histo[exon.end as usize - start] += 1;
+                    }    
+                }
+                if debug_bigwig.is_some() {
                     if i > 0 {
                         if start <= (exon.start as usize) && (exon.start as usize) < end {
-                            start_histo[exon.start as usize - start] += 1;
+                            start_bw_histogram.upsert(exon.start as usize, 0i32, &|v| *v += 1);
                         }
                     }
                     if i < exons.len()-1 {
                         if start <= (exon.end as usize) && (exon.end as usize) < end {
-                            end_histo[exon.end as usize - start] += 1;
-                        }    
-                    }
-                    if debug_bigwig.is_some() {
-                        if i > 0 {
-                            if start <= (exon.start as usize) && (exon.start as usize) < end {
-                                start_bw_histogram.upsert(exon.start as usize, 0i32, &|v| *v += 1);
-                            }
-                        }
-                        if i < exons.len()-1 {
-                            if start <= (exon.end as usize) && (exon.end as usize) < end {
-                                end_bw_histogram.upsert(exon.end as usize, 0i32, &|v| *v += 1);
-                            }
+                            end_bw_histogram.upsert(exon.end as usize, 0i32, &|v| *v += 1);
                         }
                     }
-                    
-                    // write the exon_regions histogram
-                    if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
-                        for pos in exon.start..exon.end {
-                            if start <= (pos as usize) && (pos as usize) < end {
-                                exon_regions[pos as usize - start] += 1;
-                            }
+                }
+                
+                // write the exon_regions histogram
+                if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
+                    for pos in exon.start..exon.end {
+                        if start <= (pos as usize) && (pos as usize) < end {
+                            exon_regions[pos as usize - start] += 1;
                         }
                     }
-                    // write incomplete starts/ends histograms
-                    if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
-                        if start <= (exon.end as usize) && (exon.end as usize) < end {
-                            incomplete_ends[exon.end as usize - start] += 1;
-                        }
-                    }
-                    if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
-                        if start <= (exon.start as usize) && (exon.start as usize) < end {
-                            incomplete_starts[(exon.start as usize) - start] += 1;
-                        }
-                    }
+                }
+                // write incomplete starts/ends histograms
+                if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
+                    incomplete_ends[exon.end as usize - start] += 1;
+                }
+                if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
+                    incomplete_starts[(exon.start as usize) - start] += 1;
                 }
             }
         }
