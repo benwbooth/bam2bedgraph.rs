@@ -1141,7 +1141,7 @@ fn reannotate_pair(exon1: &Record,
                 for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
                     histo[pos as usize - start] += 1;
                     if debug_bigwig.is_some() {
-                        bw_histogram.upsert(pos as usize, 0i32, &|v| *v += 1);
+                        bw_histogram.upsert(pos as usize, 1, &|v| *v += 1);
                     }
                 }
             }
@@ -1163,12 +1163,12 @@ fn reannotate_pair(exon1: &Record,
                 if debug_bigwig.is_some() {
                     if i > 0 {
                         if start <= (exon.start as usize) && (exon.start as usize) < end {
-                            start_bw_histogram.upsert(exon.start as usize, 0i32, &|v| *v += 1);
+                            start_bw_histogram.upsert(exon.start as usize, 1, &|v| *v += 1);
                         }
                     }
                     if i < exons.len()-1 {
                         if start <= (exon.end as usize) && (exon.end as usize) < end {
-                            end_bw_histogram.upsert(exon.end as usize, 0i32, &|v| *v += 1);
+                            end_bw_histogram.upsert(exon.end as usize, 1, &|v| *v += 1);
                         }
                     }
                 }
@@ -1176,9 +1176,7 @@ fn reannotate_pair(exon1: &Record,
                 // write the exon_regions histogram
                 if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
                     for pos in exon.start..exon.end {
-                        if start <= (pos as usize) && (pos as usize) < end {
-                            exon_regions[pos as usize - start] += 1;
-                        }
+                        exon_regions[pos as usize - start] += 1;
                     }
                 }
                 // write incomplete starts/ends histograms
@@ -1237,9 +1235,10 @@ fn reannotate_pair(exon1: &Record,
     let caps = MAX_SLIPPAGE.captures(&max_slippage).r()?;
     let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
     let mut exon_start = start;
+    let mut exon_value = exon_regions[exon_start-start];
     for (i, value) in exon_regions.iter().enumerate() {
-        if *value != exon_regions[exon_start-start] {
-            if *value > 0i32 {
+        if (*value == 0) != (exon_value == 0) {
+            if exon_value > 0 {
                 let exon_end = i+start;
                 writeln!(stderr(), "Looking at exon region {}..{}", exon_start, exon_end)?;
                 let max_slippage = if caps.get(2).is_some() 
@@ -1297,6 +1296,7 @@ fn reannotate_pair(exon1: &Record,
                 });
             }
             exon_start = i+start;
+            exon_value = *value;
         }
     }
     let reannotpair = ConstituitivePair {
