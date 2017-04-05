@@ -1179,6 +1179,7 @@ fn reannotate_pair(
             exon_value = *value;
         }
     }
+    'EXON_REGION:
     for exon_region in exon_regions {
         let mut starts = Vec::<(usize,i32)>::new();
         for (i, value) in start_histo[(exon_region.start-start)..(exon_region.end-start)].iter().enumerate() {
@@ -1197,7 +1198,6 @@ fn reannotate_pair(
         let mut end_score = 0;
         let mut best_start = exon_region.start;
         let mut best_end = exon_region.end;
-        'FIND_BOUNDS:
         for &(s, sscore) in &starts {
             for &(e, escore) in &ends {
                 if s < e && 
@@ -1212,7 +1212,7 @@ fn reannotate_pair(
                 iterations += 1;
                 if iterations > max_iterations {
                     writeln!(stderr(), "More than {} iterations on pair {}", max_iterations, pair_name)?;
-                    break 'FIND_BOUNDS;
+                    continue 'EXON_REGION;
                 }
             }
         }
