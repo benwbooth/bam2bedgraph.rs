@@ -1179,7 +1179,7 @@ fn reannotate_pair(
         }
     }
     // fill in the incompletes
-    writeln!(stderr(), "fill_incomplete_exons={}", fill_incomplete_exons)?;
+    //writeln!(stderr(), "fill_incomplete_exons={}", fill_incomplete_exons)?;
     if fill_incomplete_exons {
         for (i,value) in incomplete_starts.iter().enumerate() {
             if *value > 0i32 {
@@ -1224,7 +1224,7 @@ fn reannotate_pair(
     let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
     let mut exon_start = start;
     let mut exon_value = exon_regions[exon_start-start];
-    writeln!(stderr(), "exon_regions={:?}", exon_regions)?;
+    //writeln!(stderr(), "exon_regions={:?}", exon_regions)?;
     for (i, value) in exon_regions.iter().enumerate() {
         if (*value == 0) != (exon_value == 0) {
             if exon_value > 0 {
@@ -1232,7 +1232,7 @@ fn reannotate_pair(
                 let max_slippage = if !caps.get(2).map(|m| m.as_str()).unwrap_or("").is_empty()
                     { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
                     else { max_slippage };
-                writeln!(stderr(), "max_slippage={}", max_slippage)?;
+                //writeln!(stderr(), "max_slippage={}", max_slippage)?;
                 // find histogram peaks of the start and end
                 let mut max = 0;
                 let mut reannot_exon_start = exon_start;
@@ -1293,7 +1293,7 @@ fn reannotate_pair(
         exon2_row: exon2.row,
         cassettes: cassettes,
     };
-    writeln!(stderr(), "Writing reannotated pair: {:?}", reannotpair)?;
+    //writeln!(stderr(), "Writing reannotated pair: {:?}", reannotpair)?;
     Ok((reannotpair, mapped_reads))
 }
 
