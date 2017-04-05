@@ -1181,13 +1181,13 @@ fn reannotate_pair(
     }
     for exon_region in exon_regions {
         let mut starts = Vec::<(usize,i32)>::new();
-        for (i, value) in start_histo[exon_region.start..exon_region.end].iter().enumerate() {
+        for (i, value) in start_histo[(exon_region.start-start)..(exon_region.end-start)].iter().enumerate() {
             if *value > 0 {
                 starts.push((i+exon_region.start,*value));
             }
         }
         let mut ends = Vec::<(usize,i32)>::new();
-        for (i, value) in end_histo[exon_region.start..exon_region.end].iter().enumerate() {
+        for (i, value) in end_histo[(exon_region.start-start)..(exon_region.end-start)].iter().enumerate() {
             if *value > 0 {
                 ends.push((i+exon_region.start,*value));
             }
