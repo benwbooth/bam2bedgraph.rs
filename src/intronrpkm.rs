@@ -1087,7 +1087,9 @@ fn get_bam_refs(bamfile: &str, chrmap: &HashMap<String,String>) -> Result<Linked
     Ok(refs)
 }
 
-fn reannotate_pair(exon1: &Record,
+fn reannotate_pair(
+    pair_name: &str,
+    exon1: &Record,
     exon2: &Record,
     read_pairs: &HashMap<(String,String),Vec<Vec<Range<u64>>>>,
     debug_bigwig: &Option<String>,
@@ -1098,15 +1100,6 @@ fn reannotate_pair(exon1: &Record,
     end_bw_histogram: Arc<ConcHashMap<usize,i32>>) 
     -> Result<(ConstituitivePair, IntervalTree<u64,String>)> 
 {
-    let pair_name = format!("{}:{}..{}:{}..{}:{}..{}:{}", 
-        exon1.seqname, 
-        exon1.start, 
-        exon1.end, 
-        exon1.strand, 
-        exon2.seqname, 
-        exon2.start, 
-        exon2.end, 
-        exon2.strand);
     writeln!(stderr(), "Reannotating pair: {}", pair_name)?;
     
     let start = exon1.end as usize;
@@ -1121,7 +1114,6 @@ fn reannotate_pair(exon1: &Record,
     let mut mapped_reads = IntervalTree::<u64, String>::new();
     let mut cassettes = Vec::<Cassette>::new();
     for (&(_,ref read_name),read_pair) in read_pairs {
-        //writeln!(stderr(), "Looking at read pair {}: {:?}", read_name, read_pair)?;
         // at least one of the read pairs must match a constituitive splice junction
         let mut matches_splice = false;
         for exons in read_pair {
@@ -1133,10 +1125,8 @@ fn reannotate_pair(exon1: &Record,
         if !matches_splice { continue }
         
         for exons in read_pair {
-            //writeln!(stderr(), "Looking at exons {:?} in pair {:?}", exons, read_pair)?;
             // write the internal reads histogram and mapped_reads
             for exon in exons {
-                //writeln!(stderr(), "Looking at exon {:?}", exon)?;
                 mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
                 for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
                     histo[pos as usize - start] += 1;
@@ -1148,7 +1138,6 @@ fn reannotate_pair(exon1: &Record,
             
             // write the start/stop histograms
             for (i, exon) in exons.iter().enumerate() {
-                //writeln!(stderr(), "Writing start/stop histo for exon {:?}", exon)?;
                 // write start/stop histograms
                 if i > 0 {
                     if start <= (exon.start as usize) && (exon.start as usize) < end {
@@ -1190,8 +1179,8 @@ fn reannotate_pair(exon1: &Record,
         }
     }
     // fill in the incompletes
+    writeln!(stderr(), "fill_incomplete_exons={}", fill_incomplete_exons)?;
     if fill_incomplete_exons {
-        writeln!(stderr(), "Filling in incomplete starts")?;
         for (i,value) in incomplete_starts.iter().enumerate() {
             if *value > 0i32 {
                 let i = i+start;
@@ -1209,7 +1198,6 @@ fn reannotate_pair(exon1: &Record,
                 }
             }
         }
-        writeln!(stderr(), "Filling in incomplete ends")?;
         for (i,value) in incomplete_ends.iter().enumerate() {
             if *value > 0i32 {
                 let i = i+start;
@@ -1236,16 +1224,17 @@ fn reannotate_pair(exon1: &Record,
     let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
     let mut exon_start = start;
     let mut exon_value = exon_regions[exon_start-start];
+    writeln!(stderr(), "exon_regions={:?}", exon_regions)?;
     for (i, value) in exon_regions.iter().enumerate() {
         if (*value == 0) != (exon_value == 0) {
             if exon_value > 0 {
                 let exon_end = i+start;
-                writeln!(stderr(), "Looking at exon region {}..{}", exon_start, exon_end)?;
-                let max_slippage = if caps.get(2).is_some() 
+                let max_slippage = if !caps.get(2).map(|m| m.as_str()).unwrap_or("").is_empty()
                     { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
                     else { max_slippage };
+                writeln!(stderr(), "max_slippage={}", max_slippage)?;
                 // find histogram peaks of the start and end
-                let mut max = 0i32;
+                let mut max = 0;
                 let mut reannot_exon_start = exon_start;
                 for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
                     if let Some(val) = start_histo.get((j-start) as usize) {
@@ -1255,7 +1244,7 @@ fn reannotate_pair(exon1: &Record,
                         }
                     }
                 }
-                let mut max = 0i32;
+                let mut max = 0;
                 let mut reannot_exon_end = exon_end;
                 for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
                     if let Some(val) = end_histo.get((j-start) as usize) {
@@ -1265,7 +1254,7 @@ fn reannotate_pair(exon1: &Record,
                         }
                     }
                 }
-                let mut max = 0i32;
+                let mut max = 0;
                 let mut reannot_exon_end2 = exon_end;
                 for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
                     if let Some(val) = end_histo.get((j-start) as usize) {
@@ -1275,7 +1264,7 @@ fn reannotate_pair(exon1: &Record,
                         }
                     }
                 }
-                let mut max = 0i32;
+                let mut max = 0;
                 let mut reannot_exon_start2 = exon_start;
                 for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
                     if let Some(val) = start_histo.get((j-start) as usize) {
@@ -1389,6 +1378,10 @@ fn reannotate_regions(
         let end_bw_histogram = 
             if strand_is_plus { end_plus_bw_histo[&chr].clone() }
             else { end_minus_bw_histo[&chr].clone() };
+            
+        // TODO: remove me
+        let pair_name = get_pair_name(&pair, &annot);
+        //if pair_name != "SRSF11:chr1:70205681..70221839:+" { continue }
                     
         // process the constituitivepair in parallel
         let exon1 = exon1.clone();
@@ -1424,7 +1417,9 @@ fn reannotate_regions(
                     }
                 }
             }
-            let (pair,mapped_reads) = reannotate_pair(&exon1,
+            let (pair,mapped_reads) = reannotate_pair(
+                &pair_name,
+                &exon1,
                 &exon2,
                 &read_pairs,
                 &debug_bigwig,
@@ -1768,7 +1763,7 @@ fn write_rpkm_stats(
     Ok(())
 }
 
-fn get_pair_name(pair: &ConstituitivePair, annot: Arc<IndexedAnnotation>) -> String {
+fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String {
     let mut gene_id = None;
     'FIND_GENE_ID:
     for transcript_row in &annot.row2parents[&pair.exon1_row] {
@@ -1830,7 +1825,7 @@ fn write_exon_bigbed(
     {   let mut bw = BufWriter::new(File::create(&bed_file)?);
         for pair in pairs {
             // find the gene ID
-            let name = get_pair_name(pair, annot.clone());
+            let name = get_pair_name(pair, &annot);
             // write the bed record
             let score = 0;
             let item_rgb = [0,0,0].iter().map(|v| v.to_string()).join(",");
