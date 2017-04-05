@@ -105,9 +105,9 @@ struct Options {
     cds_type: Vec<String>,
     
     // flags
-    #[structopt(long="max_slippage", help = "How many bases (or % of exon length) to search for start/stop histogram peaks", name="MAX_SLIPPAGE", default_value="10")]
-    max_slippage: String,
-    #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons with only one splice junction?")]
+    #[structopt(long="max_iterations", help = "How many start/stop combinations before we skip this one?", name="MAX_ITERATIONS", default_value="200")]
+    max_iterations: usize,
+    #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons which do not have two splice junctions?")]
     fill_incomplete_exons: bool,
     
     #[structopt(long="cpu_threads", short="t", help = "How many threads to use for processing", default_value="0")]
@@ -1094,23 +1094,18 @@ fn reannotate_pair(
     read_pairs: &HashMap<(String,String),Vec<Vec<Range<u64>>>>,
     debug_bigwig: &Option<String>,
     fill_incomplete_exons: bool,
-    max_slippage: &String,
+    max_iterations: usize,
     bw_histogram: Arc<ConcHashMap<usize,i32>>,
     start_bw_histogram: Arc<ConcHashMap<usize,i32>>,
     end_bw_histogram: Arc<ConcHashMap<usize,i32>>) 
     -> Result<(ConstituitivePair, IntervalTree<u64,String>)> 
 {
-    writeln!(stderr(), "Reannotating pair: {}", pair_name)?;
-    
     let start = exon1.end as usize;
     let end = (exon2.start-1) as usize;
     let region_size = end-start;
-    let mut histo = vec![0i32; region_size];
     let mut start_histo = vec![0i32; region_size];
     let mut end_histo = vec![0i32; region_size];
-    let mut exon_regions = vec![0i32; region_size];
-    let mut incomplete_starts = vec![0i32; region_size];
-    let mut incomplete_ends = vec![0i32; region_size];
+    let mut histo = vec![0i32; region_size];
     let mut mapped_reads = IntervalTree::<u64, String>::new();
     let mut cassettes = Vec::<Cassette>::new();
     for (&(_,ref read_name),read_pair) in read_pairs {
@@ -1129,7 +1124,6 @@ fn reannotate_pair(
             for exon in exons {
                 mapped_reads.insert(Interval::new(exon.clone())?, read_name.clone());
                 for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
-                    histo[pos as usize - start] += 1;
                     if debug_bigwig.is_some() {
                         bw_histogram.upsert(pos as usize, 1, &|v| *v += 1);
                     }
@@ -1163,129 +1157,71 @@ fn reannotate_pair(
                 }
                 
                 // write the exon_regions histogram
-                if i > 0 && i < exons.len()-1 && start < (exon.start as usize) && (exon.end as usize) < end {
-                    for pos in exon.start..exon.end {
-                        exon_regions[pos as usize - start] += 1;
-                    }
-                }
-                // write incomplete starts/ends histograms
-                if i == 0 && start < exon.end as usize && (exon.end as usize) < end {
-                    incomplete_ends[exon.end as usize - start] += 1;
-                }
-                if i == exons.len()-1 && start < (exon.start as usize) && (exon.start as usize) < end {
-                    incomplete_starts[(exon.start as usize) - start] += 1;
-                }
-            }
-        }
-    }
-    // fill in the incompletes
-    //writeln!(stderr(), "fill_incomplete_exons={}", fill_incomplete_exons)?;
-    if fill_incomplete_exons {
-        for (i,value) in incomplete_starts.iter().enumerate() {
-            if *value > 0i32 {
-                let i = i+start;
-                let mut last_end = None;
-                for j in i..end as usize {
-                    if end_histo.get(j-start).is_some() {
-                        last_end = Some(j);
-                    }
-                    if histo.get(j-start as usize).is_none() { break }
-                }
-                if let Some(last_end) = last_end {
-                    for pos in i..last_end {
-                        exon_regions[(pos-start) as usize] += 1;
-                    }
-                }
-            }
-        }
-        for (i,value) in incomplete_ends.iter().enumerate() {
-            if *value > 0i32 {
-                let i = i+start;
-                let mut last_start = None;
-                for j in (start as usize..i-1).rev() {
-                    if start_histo.get(j-start).is_some() {
-                        last_start = Some(j);
-                    }
-                    if j == start || histo.get((j-1)-start).is_none() { break }
-                }
-                if let Some(last_start) = last_start {
-                    for pos in last_start..i {
-                        exon_regions[(pos-start) as usize] += 1;
+                if start < (exon.end as usize) && (exon.start as usize) < end {
+                    for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
+                        histo[pos as usize - start] += 1;
                     }
                 }
             }
         }
     }
     // iterate through exon regions
-    lazy_static! {
-        static ref MAX_SLIPPAGE: Regex = Regex::new(r"^([0-9]+)(%?)$").unwrap();
-    }
-    let caps = MAX_SLIPPAGE.captures(&max_slippage).r()?;
-    let max_slippage = caps.get(1).r()?.as_str().parse::<usize>()?;
     let mut exon_start = start;
-    let mut exon_value = exon_regions[exon_start-start];
-    //writeln!(stderr(), "exon_regions={:?}", exon_regions)?;
-    for (i, value) in exon_regions.iter().enumerate() {
+    let mut exon_value = histo[exon_start-start];
+    let mut exon_regions = Vec::<Range<usize>>::new();
+    for (i, value) in histo.iter().enumerate() {
         if (*value == 0) != (exon_value == 0) {
             if exon_value > 0 {
                 let exon_end = i+start;
-                let max_slippage = if !caps.get(2).map(|m| m.as_str()).unwrap_or("").is_empty()
-                    { ((max_slippage as f64 / 100f64)*((exon_end-exon_start) as f64)) as usize }
-                    else { max_slippage };
-                //writeln!(stderr(), "max_slippage={}", max_slippage)?;
-                // find histogram peaks of the start and end
-                let mut max = 0;
-                let mut reannot_exon_start = exon_start;
-                for j in exon_start..std::cmp::min(exon_end, exon_start+max_slippage) {
-                    if let Some(val) = start_histo.get((j-start) as usize) {
-                        if max < *val {  
-                            max = *val;
-                            reannot_exon_start = j;
-                        }
-                    }
-                }
-                let mut max = 0;
-                let mut reannot_exon_end = exon_end;
-                for j in std::cmp::max(reannot_exon_start, exon_end-max_slippage)..exon_end {
-                    if let Some(val) = end_histo.get((j-start) as usize) {
-                        if max < *val {
-                            max = *val;
-                            reannot_exon_end = j;
-                        }
-                    }
-                }
-                let mut max = 0;
-                let mut reannot_exon_end2 = exon_end;
-                for j in std::cmp::max(exon_start, exon_end-max_slippage)..exon_end {
-                    if let Some(val) = end_histo.get((j-start) as usize) {
-                        if max < *val {
-                            max = *val;
-                            reannot_exon_end2 = j;
-                        }
-                    }
-                }
-                let mut max = 0;
-                let mut reannot_exon_start2 = exon_start;
-                for j in exon_start..std::cmp::min(reannot_exon_end2, exon_start+max_slippage) {
-                    if let Some(val) = start_histo.get((j-start) as usize) {
-                        if max < *val {  
-                            max = *val;
-                            reannot_exon_start2 = j;
-                        }
-                    }
-                }
-                let (exon_start, exon_end) = 
-                    if reannot_exon_end-reannot_exon_start < reannot_exon_end2-reannot_exon_start2
-                    {(reannot_exon_start2, reannot_exon_end2)}
-                    else {(reannot_exon_start, reannot_exon_end)};
-                // store the reannotated cassette exon
-                cassettes.push(Cassette {
-                    range: exon_start as u64..exon_end as u64,
-                    cassette_row: None,
-                });
+                exon_regions.push(exon_start..exon_end);
             }
             exon_start = i+start;
             exon_value = *value;
+        }
+    }
+    for exon_region in exon_regions {
+        let mut starts = Vec::<(usize,i32)>::new();
+        for (i, value) in start_histo[exon_region.start..exon_region.end].iter().enumerate() {
+            if *value > 0 {
+                starts.push((i+exon_region.start,*value));
+            }
+        }
+        let mut ends = Vec::<(usize,i32)>::new();
+        for (i, value) in end_histo[exon_region.start..exon_region.end].iter().enumerate() {
+            if *value > 0 {
+                ends.push((i+exon_region.start,*value));
+            }
+        }
+        let mut iterations = 0;
+        let mut start_score = 0;
+        let mut end_score = 0;
+        let mut best_start = exon_region.start;
+        let mut best_end = exon_region.end;
+        'FIND_BOUNDS:
+        for &(s, sscore) in &starts {
+            for &(e, escore) in &ends {
+                if s < e && 
+                    (start_score+end_score < sscore+escore 
+                        || (start_score+end_score == sscore+escore && best_end-best_start < e-s)) 
+                {
+                    start_score = sscore;
+                    end_score = escore;
+                    best_start = s;
+                    best_end = e;
+                }
+                iterations += 1;
+                if iterations > max_iterations {
+                    writeln!(stderr(), "More than {} iterations on pair {}", max_iterations, pair_name)?;
+                    break 'FIND_BOUNDS;
+                }
+            }
+        }
+        // store the reannotated cassette exon
+        if fill_incomplete_exons || (start_score > 0  && end_score > 0) {
+            cassettes.push(Cassette {
+                range: best_start as u64..best_end as u64,
+                cassette_row: None,
+            });
         }
     }
     let reannotpair = ConstituitivePair {
@@ -1379,20 +1315,17 @@ fn reannotate_regions(
             if strand_is_plus { end_plus_bw_histo[&chr].clone() }
             else { end_minus_bw_histo[&chr].clone() };
             
-        // TODO: remove me
-        let pair_name = get_pair_name(&pair, &annot);
-        //if pair_name != "SRSF11:chr1:70205681..70221839:+" { continue }
-                    
         // process the constituitivepair in parallel
         let exon1 = exon1.clone();
         let exon2 = exon2.clone();
         let debug_bigwig = options.debug_bigwig.clone().map(String::from);
         let fill_incomplete_exons = options.fill_incomplete_exons;
-        let max_slippage = String::from(options.max_slippage.clone());
+        let max_iterations = options.max_iterations;
         let bamfiles = Arc::new(bamfiles.to_vec());
         let bamstrand = Arc::new(bamstrand.to_vec());
         let tidmaps = tidmaps.clone();
         let annot = annot.clone();
+        let pair_name = get_pair_name(pair, &annot);
         let pair_future = pool.spawn_fn(move ||->Result<(ConstituitivePair,RpkmStats)> {
             //get all the bam reads in parallel
             let mut read_pairs = HashMap::<(String,String),Vec<Vec<Range<u64>>>>::new();
@@ -1424,7 +1357,7 @@ fn reannotate_regions(
                 &read_pairs,
                 &debug_bigwig,
                 fill_incomplete_exons,
-                &max_slippage,
+                max_iterations,
                 bw_histogram,
                 start_bw_histogram,
                 end_bw_histogram)?;
@@ -1884,13 +1817,6 @@ fn run() -> Result<()> {
     options.cds_type =
         (if options.cds_type.is_empty() { vec!["CDS".to_string()] }
          else { options.cds_type.clone() }).into_iter().collect();
-    //  validate arguments
-    lazy_static! {
-        static ref VALIDATE_MAX_SLIPPAGE: Regex = Regex::new(r"^[0-9]+%?$").unwrap();
-    }
-    if !VALIDATE_MAX_SLIPPAGE.is_match(&options.max_slippage) {
-        return Err(format!("Invalid max_slippage value {}: must be number of bases or % of exon length", options.max_slippage).into());
-    }
     // set debug options if --debug flag is set
     if options.debug {
         // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
