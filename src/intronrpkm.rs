@@ -1140,7 +1140,7 @@ fn reannotate_pair(
                 }
                 if i < exons.len()-1 {
                     if start <= (exon.end as usize) && (exon.end as usize) < end {
-                        end_histo[exon.end as usize - start] += 1;
+                        end_histo[std::cmp::max(0, exon.end as usize - start - 1)] += 1;
                     }    
                 }
                 if debug_bigwig.is_some() {
@@ -1151,7 +1151,7 @@ fn reannotate_pair(
                     }
                     if i < exons.len()-1 {
                         if start <= (exon.end as usize) && (exon.end as usize) < end {
-                            end_bw_histogram.upsert(exon.end as usize, 1, &|v| *v += 1);
+                            end_bw_histogram.upsert(std::cmp::max(0, exon.end-1) as usize, 1, &|v| *v += 1);
                         }
                     }
                 }
