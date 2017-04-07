@@ -1385,14 +1385,16 @@ fn reannotate_regions(
     }
     
     if options.debug_bigwig.is_some() { 
+        let plus_parent = format!("{}_+", options.debug_prefix);
+        let minus_parent = format!("{}_-", options.debug_prefix);
         let start_prefix = format!("{}.start", &options.debug_bigwig.clone().r()?);
         let end_prefix = format!("{}.end", &options.debug_bigwig.clone().r()?);
-        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", true)?;
-        write_bigwig(&start_prefix, &start_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&end_prefix, &end_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, "debug_bigwig_+", false)?;
-        write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", true)?;
-        write_bigwig(&start_prefix, &start_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
-        write_bigwig(&end_prefix, &end_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, "debug_bigwig_-", false)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, &plus_parent, true)?;
+        write_bigwig(&start_prefix, &start_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, &plus_parent, false)?;
+        write_bigwig(&end_prefix, &end_plus_bw_histo, &annot.refs, &annot.vizchrmap, "+", trackdb, &plus_parent, false)?;
+        write_bigwig(&options.debug_bigwig.clone().r()?, &minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, &minus_parent, true)?;
+        write_bigwig(&start_prefix, &start_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, &minus_parent, false)?;
+        write_bigwig(&end_prefix, &end_minus_bw_histo, &annot.refs, &annot.vizchrmap, "-", trackdb, &minus_parent, false)?;
     }
     Ok((reannotated,rpkmstats))
 }
