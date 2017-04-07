@@ -116,6 +116,8 @@ struct Options {
     // debug output files
     #[structopt(long="debug", help = "Output all debug files?")]
     debug: bool,
+    #[structopt(long="debug_prefix", help = "Prefix to prepend to debug output files", default_value="debug")]
+    debug_prefix: String,
     #[structopt(long="debug_annot_gff", help = "Write the input annotation as a gff debug file", name="DEBUG_ANNOT_GFF_FILE")]
     debug_annot_gff: Option<String>,
     #[structopt(long="debug_annot_gtf", help = "Write the input annotation as a gtf debug file", name="DEBUG_ANNOT_GTF_FILE")]
@@ -1819,16 +1821,16 @@ fn run() -> Result<()> {
          else { options.cds_type.clone() }).into_iter().collect();
     // set debug options if --debug flag is set
     if options.debug {
-        // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(String::from("debug_annot.gff")) }
-        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(String::from("debug_annot.gtf")) }
-        // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(String::from("debug_annot.bb")) }
-        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(String::from("debug_annot.json")) }
-        if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(String::from("debug_exon.bb")) }
-        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(String::from("debug_intronrpkm")) }
-        if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(String::from("debug_reannot.bb")) }
-        if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(String::from("debug_rpkm.bb")) }
-        if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(String::from("debug_rpkmstats.json")) }
-        if options.debug_trackdb.is_none() { options.debug_trackdb = Some(String::from("trackDb.txt")) }
+        // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}_annot.gff", options.debug_prefix)) }
+        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}_annot.gtf", options.debug_prefix)) }
+        // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}_annot.bb", options.debug_prefix)) }
+        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}_annot.json", options.debug_prefix)) }
+        if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(format!("{}_exon.bb", options.debug_prefix)) }
+        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(format!("{}_intronrpkm", options.debug_prefix)) }
+        if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(format!("{}_reannot.bb", options.debug_prefix)) }
+        if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(format!("{}_rpkm.bb", options.debug_prefix)) }
+        if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(format!("{}_rpkmstats.json", options.debug_prefix)) }
+        if options.debug_trackdb.is_none() { options.debug_trackdb = Some(format!("{}_trackDb.txt", options.debug_prefix)) }
     }
     
     // set up the trackdb writer
