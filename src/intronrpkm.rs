@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::{stdout, stderr, sink};
 use std::path::Path;
@@ -94,6 +95,8 @@ struct Options {
     // output file
     #[structopt(long="out", short="o", help = "Output file", name="OUT_FILE", default_value="-")]
     outfile: String,
+    #[structopt(long="outannot", help = "Output Annotation file", name="OUT_ANNOT_FILE")]
+    outannot: Option<String>,
     // feature types filter
     #[structopt(long="exon_type", help = "The exon type(s) to search for", name="EXON_TYPE")]
     exon_type: Vec<String>,
@@ -525,8 +528,8 @@ impl IndexedAnnotation {
             let mut vec: Vec<_> = parents.into_iter().collect();
             vec.sort_by(|a, b| {
                 rows[*a]
-                    .seqname
-                    .cmp(&rows[*b].seqname)
+                    .seqname.as_bytes()
+                    .cmp(&rows[*b].seqname.as_bytes())
                     .then_with(|| rows[*a].start.cmp(&rows[*b].start))
             });
             *up = vec;
@@ -538,8 +541,8 @@ impl IndexedAnnotation {
             let mut vec: Vec<_> = children.into_iter().collect();
             vec.sort_by(|a, b| {
                 rows[*a]
-                    .seqname
-                    .cmp(&rows[*b].seqname)
+                    .seqname.as_bytes()
+                    .cmp(&rows[*b].seqname.as_bytes())
                     .then_with(|| rows[*a].start.cmp(&rows[*b].start))
             });
             *up = vec;
@@ -1236,7 +1239,7 @@ fn reannotate_pair(
 }
 
 fn reannotate_regions(
-    annot: Arc<IndexedAnnotation>,
+    annot: &Arc<IndexedAnnotation>,
     pairs: &[ConstituitivePair], 
     bamfiles: &[String], 
     bamstrand: &[Option<bool>], 
@@ -1635,7 +1638,7 @@ fn compute_rpkm(
 
 fn write_rpkm_stats(
     outfile: &str, 
-    annot: Arc<IndexedAnnotation>, 
+    annot: &Arc<IndexedAnnotation>, 
     rpkmstats: &mut[RpkmStats]) 
     -> Result<()> 
 {
@@ -1806,6 +1809,294 @@ fn write_exon_bigbed(
     Ok(())
 }
 
+fn write_enriched_annotation(
+    annot: &Arc<IndexedAnnotation>, 
+    reannotated_pairs: &Vec<ConstituitivePair>,
+    outannot: &str) 
+    -> Result<()> 
+{
+    annot.to_gff(&outannot)?; 
+    let mut output: BufWriter<Box<Write>> = BufWriter::new(
+        if outannot == "-" { Box::new(stdout()) } 
+        else { Box::new(OpenOptions::new().append(true).open(outannot)?) });
+        
+    // get the set of transcript -> pair associations
+    let mut transcript2pair = HashMap::<usize,HashSet<usize>>::new();
+    for (i, pair) in reannotated_pairs.iter().enumerate() {
+        let exon1parents = &annot.row2parents[&pair.exon1_row];
+        let exon2parents = annot.row2parents[&pair.exon2_row].iter().collect::<HashSet<_>>();
+        for transcript_row in exon1parents {
+            if exon2parents.contains(transcript_row) {
+                transcript2pair.entry(*transcript_row).or_insert_with(HashSet::new).insert(i);
+            }
+        }
+    }
+    
+    // keep track of unique transcript identifiers
+    lazy_static! {
+        static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
+    }
+    let mut ids = HashSet::<String>::new();
+    let mut names = HashSet::<String>::new();
+    // sort transcripts by largest number of associated constituitive pairs
+    let mut transcript_order = transcript2pair.keys().collect::<Vec<_>>();
+    transcript_order.sort_by(|a,b| transcript2pair[b].len().cmp(&transcript2pair[a].len()));
+    let mut seen_pair = HashSet::<usize>::new();
+    for transcript_row in transcript_order {
+        let transcript = &annot.rows[*transcript_row];
+        let mut records = Vec::<Record>::new();
+        
+        // make sure there is at least one never-before-seen pair that this transcript owns
+        let mut any_new_pairs = false;
+        for pair_row in &transcript2pair[transcript_row] {
+            if !seen_pair.contains(pair_row) {
+                any_new_pairs = true;
+            }
+        }
+        if !any_new_pairs { continue }
+            
+        // find unique transcript IDs and names
+        let mut id = transcript.attributes.get("ID").map(|s| format!("{}.reannot", s));
+        let mut name = transcript.attributes.get("Name").map(|s| format!("{}.reannot", s));
+        let mut transcript_id = transcript.attributes.get("transcript_id").map(|s| format!("{}.reannot", s));
+        let mut transcript_name = transcript.attributes.get("transcript_name").map(|s| format!("{}.reannot", s));
+        id = if let Some(mut id) = id {
+            while ids.contains(&id) {
+                id = String::from(TRANSCRIPT_RENAME.replace(&id.as_ref(), |caps: &Captures| {
+                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+            }
+            ids.insert(id.clone());
+            Some(id)
+        } else {id};
+        name = if let Some(mut name) = name {
+            while ids.contains(&name) {
+                name = String::from(TRANSCRIPT_RENAME.replace(&name.as_ref(), |caps: &Captures| {
+                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+            }
+            names.insert(name.clone());
+            Some(name)
+        } else {name};
+        transcript_id = if let Some(mut transcript_id) = transcript_id {
+            while ids.contains(&transcript_id) {
+                transcript_id = String::from(TRANSCRIPT_RENAME.replace(&transcript_id.as_ref(), |caps: &Captures| {
+                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+            }
+            ids.insert(transcript_id.clone());
+            Some(transcript_id)
+        } else {transcript_id};
+        transcript_name = if let Some(mut transcript_name) = transcript_name {
+            while ids.contains(&transcript_name) {
+                transcript_name = String::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
+                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+            }
+            names.insert(transcript_name.clone());
+            Some(transcript_name)
+        } else {transcript_name};
+        // create a new transcript record
+        let mut new_transcript = transcript.clone();
+        if new_transcript.attributes.contains_key("ID") && id.is_some() 
+            {new_transcript.attributes["ID"] = id.clone().r()?};
+        if new_transcript.attributes.contains_key("Name") && name.is_some() 
+            {new_transcript.attributes["Name"] = name.clone().r()?};
+        if new_transcript.attributes.contains_key("transcript_id") && transcript_id.is_some() 
+            {new_transcript.attributes["transcript_id"] = transcript_id.clone().r()?};
+        if new_transcript.attributes.contains_key("transcript_name") && transcript_name.is_some() 
+            {new_transcript.attributes["transcript_name"] = transcript_name.clone().r()?};
+        // write new transcript record to file
+        records.push(new_transcript);
+        
+        // get a list of feature starts/stops, and a tree of CDS features
+        let mut featurestarts = HashSet::<(String,u64)>::new();
+        let mut featurestops = HashSet::<(String,u64)>::new();
+        let mut cdstree = IntervalTree::<u64,usize>::new();
+        for child_row in &annot.row2children[transcript_row] {
+            let child = &annot.rows[*child_row];
+            featurestarts.insert((child.feature_type.clone(), child.start-1));
+            featurestops.insert((child.feature_type.clone(), child.end));
+            if child.feature_type == "CDS" {
+                cdstree.insert(Interval::new((child.start - 1)..(child.end))?, *child_row);
+            }
+        }
+        
+        // for each child of the original transcript
+        for child_row in &annot.row2children[transcript_row] {
+            // make a copy
+            let mut child = annot.rows[*child_row].clone();
+            // update the parents list with the new transcript ID
+            if let Some(parent) = child.attributes.get("Parent") {
+                if let Some(oldid) = transcript.attributes.get("ID") {
+                    if let Some(id) = id.clone() {
+                        let mut newparents = Vec::<String>::new();
+                        for p in parent.split(",") {
+                            newparents.push(if p == oldid {id.clone()} else {p.to_string()});
+                        }
+                    }
+                }
+            }
+            // update transcript_id and transcript_name attributes
+            if child.attributes.contains_key("transcript_id") {
+                if let Some(transcript_id) = transcript_id.clone() {
+                    child.attributes["transcript_id"] = transcript_id;
+                }
+            }
+            if child.attributes.contains_key("transcript_name") {
+                if let Some(transcript_name) = transcript_name.clone() {
+                    child.attributes["transcript_name"] = transcript_name;
+                }
+            }
+            if child.feature_type == "CDS" {
+                
+            }
+            // store child record
+            records.push(child);
+            
+            // update any grandchildren with correct transcript_ids and transcript_names
+            let mut seen = HashSet::<usize>::new();
+            let mut children = Vec::<usize>::new();
+            children.append(&mut annot.row2children[child_row].clone());
+            while !children.is_empty() {
+                let mut newchildren = Vec::<usize>::new();
+                for c in children {
+                    if !seen.contains(&c)  {
+                        seen.insert(c);
+                        let mut cc = annot.rows[c].clone();
+                        // update transcript_id and transcript_name attributes
+                        if cc.attributes.contains_key("transcript_id") {
+                            if let Some(transcript_id) = transcript_id.clone() {
+                                cc.attributes["transcript_id"] = transcript_id;
+                            }
+                        }
+                        if cc.attributes.contains_key("transcript_name") {
+                            if let Some(transcript_name) = transcript_name.clone() {
+                                cc.attributes["transcript_name"] = transcript_name;
+                            }
+                        }
+                        // write child record
+                        records.push(cc);
+                        // add more children
+                        newchildren.append(&mut annot.row2children[&c].clone());
+                    }
+                }
+                children = newchildren;
+            }
+        }
+        
+        for pair_row in &transcript2pair[transcript_row] {
+            if !seen_pair.contains(pair_row) {
+                seen_pair.insert(*pair_row);
+                let pair = &reannotated_pairs[*pair_row];
+                let exon1 = &annot.rows[pair.exon1_row];
+                let exon2 = &annot.rows[pair.exon2_row];
+                    
+                let cdstype = 
+                    if featurestops.contains(&("CDS".to_string(), exon1.end)) && 
+                        featurestarts.contains(&("CDS".to_string(), exon2.start-1))
+                    { Some(("CDS","CDS")) }
+                    else if featurestops.contains(&("five_prime_UTR".to_string(), exon1.end)) && 
+                        featurestarts.contains(&("five_prime_UTR".to_string(), exon2.start-1))
+                    { Some(("five_prime_UTR","UTR5")) }
+                    else if featurestops.contains(&("three_prime_UTR".to_string(), exon1.end)) && 
+                        featurestarts.contains(&("three_prime_UTR".to_string(), exon2.start-1))
+                    { Some(("three_prime_UTR","UTR3")) }
+                    else if featurestops.contains(&("UTR".to_string(), exon1.end)) && 
+                        featurestarts.contains(&("UTR".to_string(), exon2.start-1))
+                    { Some(("UTR","UTR")) }
+                    else { None };
+                
+                // finally, add the reannotated cassettes
+                lazy_static! {
+                    static ref EXON_RENAME: Regex = Regex::new(r"(?:[:]([0-9]+))?$").unwrap();
+                }
+                for cassette in &pair.cassettes {
+                    // get a unique ID for the cassette
+                    let mut cassette_id = transcript.attributes.get("ID").map(|s| format!("exon:{}:1", s));
+                    cassette_id = if let Some(mut cassette_id) = cassette_id {
+                        while ids.contains(&cassette_id) {
+                            cassette_id = String::from(EXON_RENAME.replace(&cassette_id.as_ref(), |caps: &Captures| {
+                                format!(":{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                        }
+                        ids.insert(cassette_id.clone());
+                        Some(cassette_id)
+                    } else {cassette_id};
+                    
+                    let mut attributes = exon1.attributes.clone();
+                    if let Some(cassette_id) = cassette_id {
+                        attributes.insert("ID".to_string(), cassette_id);
+                    }
+                    if let Some(ref id) = id {
+                        attributes.insert("Parent".to_string(), id.clone());
+                    }
+                    if let Some(ref transcript_id) = transcript_id {
+                        attributes.insert("transcript_id".to_string(), transcript_id.clone());
+                    }
+                    if let Some(ref transcript_name) = transcript_name {
+                        attributes.insert("transcript_name".to_string(), transcript_name.clone());
+                    }
+                    
+                    let record = Record {
+                        row: 0,
+                        seqname: exon1.seqname.clone(),
+                        source: exon1.source.clone(),
+                        feature_type: "exon".to_string(),
+                        start: cassette.range.start+1,
+                        end: cassette.range.end,
+                        score: ".".to_string(),
+                        strand: exon1.strand.clone(),
+                        frame: ".".to_string(),
+                        attributes: attributes.clone(),
+                    };
+                    records.push(record);
+                    if let Some(cdstype) = cdstype {
+                        let mut attributes = attributes.clone();
+                        // get a unique ID for the cassette CDS feature
+                        let mut cds_id = transcript.attributes.get("ID").map(|s| format!("{}:{}:1", cdstype.1, s));
+                        cds_id = if let Some(mut cds_id) = cds_id {
+                            while ids.contains(&cds_id) {
+                                cds_id = String::from(EXON_RENAME.replace(&cds_id.as_ref(), |caps: &Captures| {
+                                    format!(":{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                            }
+                            ids.insert(cds_id.clone());
+                            Some(cds_id)
+                        } else {cds_id};
+                        if let Some(cds_id) = cds_id {
+                            attributes.insert("ID".to_string(), cds_id);
+                        }
+                        let record = Record {
+                            row: 0,
+                            seqname: exon1.seqname.clone(),
+                            source: exon1.source.clone(),
+                            feature_type: cdstype.0.to_string(),
+                            start: cassette.range.start+1,
+                            end: cassette.range.end,
+                            score: ".".to_string(),
+                            strand: exon1.strand.clone(),
+                            frame: ".".to_string(),
+                            attributes: attributes,
+                        };
+                        records.push(record);
+                    }
+                }
+            }
+        }
+        // compute frame field for all the CDS features
+        // write features to output file
+        for record in records {
+            let mut record = record;
+            // compute the frame for CDS features
+            if record.feature_type == "CDS" {
+                let prevcdslen: u64 = cdstree.find(
+                        if transcript.strand == "-" {record.end..std::u64::MAX}
+                        else {0..record.start-1}).
+                    map(|c| annot.rows[*c.data()].end-annot.rows[*c.data()].start+1).sum();
+                let frame = (prevcdslen % 3).to_string();
+                record.frame = frame;
+            }
+            output.write_fmt(format_args!("{}", record.to_gff()?))?;
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let mut options = Options::from_args();
     // set defaults for feature types
@@ -1825,7 +2116,7 @@ fn run() -> Result<()> {
     if options.debug {
         // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}_annot.gff", options.debug_prefix)) }
         // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}_annot.gtf", options.debug_prefix)) }
-        // if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}_annot.bb", options.debug_prefix)) }
+        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}_annot.bb", options.debug_prefix)) }
         // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}_annot.json", options.debug_prefix)) }
         if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(format!("{}_exon.bb", options.debug_prefix)) }
         if options.debug_bigwig.is_none() { options.debug_bigwig = Some(format!("{}_intronrpkm", options.debug_prefix)) }
@@ -1923,7 +2214,7 @@ fn run() -> Result<()> {
         
     writeln!(stderr(), "Reannotating cassette regions")?;
     let (reannotated_pairs, mut rpkmstats) = reannotate_regions(
-        annot.clone(),
+        &annot,
         &exonpairs, 
         &bamfiles, 
         &bamstrand,
@@ -1944,7 +2235,12 @@ fn run() -> Result<()> {
             serde_json::to_writer_pretty(&mut output, &rpkmstats)?;
     }
     writeln!(stderr(), "Writing RPKM stats to {:?}", &options.outfile)?;
-    write_rpkm_stats(&options.outfile, annot.clone(), &mut rpkmstats)?;
+    write_rpkm_stats(&options.outfile, &annot, &mut rpkmstats)?;
+    
+    if options.outannot.is_some() {
+        writeln!(stderr(), "Writing output annotation file")?;
+        write_enriched_annotation(&annot, &reannotated_pairs, &options.outannot.r()?)?;
+    }
     Ok(())
 }
 
