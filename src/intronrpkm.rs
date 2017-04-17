@@ -1825,11 +1825,14 @@ fn write_enriched_annotation(
         // get the set of transcript -> pair associations
         let mut transcript2pair = HashMap::<usize,HashSet<usize>>::new();
         for (i, pair) in reannotated_pairs.iter().enumerate() {
-            let exon1parents = &annot.row2parents[&pair.exon1_row];
-            let exon2parents = annot.row2parents[&pair.exon2_row].iter().collect::<HashSet<_>>();
-            for transcript_row in exon1parents {
-                if exon2parents.contains(transcript_row) {
-                    transcript2pair.entry(*transcript_row).or_insert_with(HashSet::new).insert(i);
+            if let Some(ref exon1parents) = annot.row2parents.get(&pair.exon1_row) {
+                if let Some(ref exon2parents) = annot.row2parents.get(&pair.exon2_row) {
+                    let exon2parents = exon2parents.iter().collect::<HashSet<_>>();
+                    for transcript_row in exon1parents.iter() {
+                        if exon2parents.contains(transcript_row) {
+                            transcript2pair.entry(*transcript_row).or_insert_with(HashSet::new).insert(i);
+                        }
+                    }
                 }
             }
         }
@@ -1897,13 +1900,13 @@ fn write_enriched_annotation(
             // create a new transcript record
             let mut new_transcript = transcript.clone();
             if new_transcript.attributes.contains_key("ID") && id.is_some() 
-                {new_transcript.attributes["ID"] = id.clone().r()?};
+                {new_transcript.attributes.insert("ID".to_string(), id.clone().r()?);};
             if new_transcript.attributes.contains_key("Name") && name.is_some() 
-                {new_transcript.attributes["Name"] = name.clone().r()?};
+                {new_transcript.attributes.insert("Name".to_string(), name.clone().r()?);};
             if new_transcript.attributes.contains_key("transcript_id") && transcript_id.is_some() 
-                {new_transcript.attributes["transcript_id"] = transcript_id.clone().r()?};
+                {new_transcript.attributes.insert("transcript_id".to_string(), transcript_id.clone().r()?);};
             if new_transcript.attributes.contains_key("transcript_name") && transcript_name.is_some() 
-                {new_transcript.attributes["transcript_name"] = transcript_name.clone().r()?};
+                {new_transcript.attributes.insert("transcript_name".to_string(), transcript_name.clone().r()?);};
             // write new transcript record to file
             records.push(new_transcript);
             
@@ -1912,73 +1915,79 @@ fn write_enriched_annotation(
             let mut featurestops = HashSet::<(String,u64)>::new();
             let mut cdstree = IntervalTree::<u64,usize>::new();
             // for each child of the original transcript
-            for child_row in &annot.row2children[transcript_row] {
-                // make a copy
-                let mut child = annot.rows[*child_row].clone();
-                // populate featurestarts/stops and cdstree
-                featurestarts.insert((child.feature_type.clone(), child.start-1));
-                featurestops.insert((child.feature_type.clone(), child.end));
-                if child.feature_type == "CDS" {
-                    cdstree.insert(Interval::new((child.start - 1)..(child.end))?, *child_row);
-                }
-                // update the parents list with the new transcript ID
-                if let Some(parent) = child.attributes.get("Parent") {
-                    if let Some(oldid) = transcript.attributes.get("ID") {
-                        if let Some(id) = id.clone() {
-                            let mut newparents = Vec::<String>::new();
-                            for p in parent.split(",") {
-                                newparents.push(if p == oldid {id.clone()} else {p.to_string()});
+            if let Some(ref transcript_row2children) = annot.row2children.get(transcript_row) {
+                for child_row in transcript_row2children.iter() {
+                    // make a copy
+                    let mut child = annot.rows[*child_row].clone();
+                    // populate featurestarts/stops and cdstree
+                    featurestarts.insert((child.feature_type.clone(), child.start-1));
+                    featurestops.insert((child.feature_type.clone(), child.end));
+                    if child.feature_type == "CDS" {
+                        cdstree.insert(Interval::new((child.start - 1)..(child.end))?, *child_row);
+                    }
+                    // update the parents list with the new transcript ID
+                    if let Some(parent) = child.attributes.get("Parent") {
+                        if let Some(oldid) = transcript.attributes.get("ID") {
+                            if let Some(id) = id.clone() {
+                                let mut newparents = Vec::<String>::new();
+                                for p in parent.split(",") {
+                                    newparents.push(if p == oldid {id.clone()} else {p.to_string()});
+                                }
                             }
                         }
                     }
-                }
-                // update transcript_id and transcript_name attributes
-                if child.attributes.contains_key("transcript_id") {
-                    if let Some(transcript_id) = transcript_id.clone() {
-                        child.attributes["transcript_id"] = transcript_id;
-                    }
-                }
-                if child.attributes.contains_key("transcript_name") {
-                    if let Some(transcript_name) = transcript_name.clone() {
-                        child.attributes["transcript_name"] = transcript_name;
-                    }
-                }
-                // store child record
-                records.push(child);
-                
-                // update any grandchildren with correct transcript_ids and transcript_names
-                let mut seen = HashSet::<usize>::new();
-                let mut children = Vec::<usize>::new();
-                children.append(&mut annot.row2children[child_row].clone());
-                while !children.is_empty() {
-                    let mut newchildren = Vec::<usize>::new();
-                    for c in children {
-                        if !seen.contains(&c)  {
-                            seen.insert(c);
-                            let mut cc = annot.rows[c].clone();
-                            featurestarts.insert((cc.feature_type.clone(), cc.start-1));
-                            featurestops.insert((cc.feature_type.clone(), cc.end));
-                            if cc.feature_type == "CDS" {
-                                cdstree.insert(Interval::new((cc.start - 1)..(cc.end))?, c);
-                            }
-                            // update transcript_id and transcript_name attributes
-                            if cc.attributes.contains_key("transcript_id") {
-                                if let Some(transcript_id) = transcript_id.clone() {
-                                    cc.attributes["transcript_id"] = transcript_id;
-                                }
-                            }
-                            if cc.attributes.contains_key("transcript_name") {
-                                if let Some(transcript_name) = transcript_name.clone() {
-                                    cc.attributes["transcript_name"] = transcript_name;
-                                }
-                            }
-                            // write child record
-                            records.push(cc);
-                            // add more children
-                            newchildren.append(&mut annot.row2children[&c].clone());
+                    // update transcript_id and transcript_name attributes
+                    if child.attributes.contains_key("transcript_id") {
+                        if let Some(transcript_id) = transcript_id.clone() {
+                            child.attributes.insert("transcript_id".to_string(), transcript_id);
                         }
                     }
-                    children = newchildren;
+                    if child.attributes.contains_key("transcript_name") {
+                        if let Some(transcript_name) = transcript_name.clone() {
+                            child.attributes.insert("transcript_name".to_string(), transcript_name);
+                        }
+                    }
+                    // store child record
+                    records.push(child);
+                    
+                    // update any grandchildren with correct transcript_ids and transcript_names
+                    let mut seen = HashSet::<usize>::new();
+                    let mut children = Vec::<usize>::new();
+                    if let Some(ref mut cs) = annot.row2children.get(child_row) {
+                        children.append(&mut cs.clone());
+                    }
+                    while !children.is_empty() {
+                        let mut newchildren = Vec::<usize>::new();
+                        for c in children {
+                            if !seen.contains(&c)  {
+                                seen.insert(c);
+                                let mut cc = annot.rows[c].clone();
+                                featurestarts.insert((cc.feature_type.clone(), cc.start-1));
+                                featurestops.insert((cc.feature_type.clone(), cc.end));
+                                if cc.feature_type == "CDS" {
+                                    cdstree.insert(Interval::new((cc.start - 1)..(cc.end))?, c);
+                                }
+                                // update transcript_id and transcript_name attributes
+                                if cc.attributes.contains_key("transcript_id") {
+                                    if let Some(transcript_id) = transcript_id.clone() {
+                                        cc.attributes.insert("transcript_id".to_string(), transcript_id);
+                                    }
+                                }
+                                if cc.attributes.contains_key("transcript_name") {
+                                    if let Some(transcript_name) = transcript_name.clone() {
+                                        cc.attributes.insert("transcript_name".to_string(), transcript_name);
+                                    }
+                                }
+                                // write child record
+                                records.push(cc);
+                                // add more children
+                                if let Some(ref mut cs) = annot.row2children.get(&c) {
+                                    newchildren.append(&mut cs.clone());
+                                }
+                            }
+                        }
+                        children = newchildren;
+                    }
                 }
             }
             
