@@ -814,7 +814,7 @@ impl IndexedAnnotation {
         // call bedToBigBed
         cmd!("bedToBigBed","-type=bed12","-tab","-extraIndex=name", &bed_file, &genome_filename, &file).run()?;
         // remove the bed file
-        std::fs::remove_file(&bed_file)?;
+        // std::fs::remove_file(&bed_file)?;
         // remove the genome file
         std::fs::remove_file(&genome_filename)?;
         
@@ -2120,7 +2120,7 @@ fn run() -> Result<()> {
         (if options.gene_type.is_empty() { vec!["gene".to_string()] } 
          else { options.gene_type.clone() }).into_iter().collect();
     //options.transcript_type = 
-    //    (if options.transcript_type.is_empty() { vec!["mRNA".to_string()] } 
+    //    (if options.transcript_type.is_empty() { vec!["transcript".to_string()] } 
     //     else { options.transcript_type.clone() }).into_iter().collect();
     options.exon_type =
         (if options.exon_type.is_empty() { vec!["exon".to_string()] }
@@ -2130,7 +2130,7 @@ fn run() -> Result<()> {
          else { options.cds_type.clone() }).into_iter().collect();
     // set debug options if --debug flag is set
     if options.debug {
-        // if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}_annot.gff", options.debug_prefix)) }
+        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}_annot.gff", options.debug_prefix)) }
         // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}_annot.gtf", options.debug_prefix)) }
         if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}_annot.bb", options.debug_prefix)) }
         // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}_annot.json", options.debug_prefix)) }
@@ -2165,20 +2165,20 @@ fn run() -> Result<()> {
         Options::clap().print_help()?;
         return Err("No bam files were passed in!".into());
     }
-    if options.transcript_type.is_empty() { options.transcript_type.push(String::from("mRNA"))  }
+    let transcript_type = String::from("transcript");
     let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
         IndexedAnnotation::from_gff(
             &annotfile_gff, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type[0].as_ref(),
+            options.transcript_type.get(0).unwrap_or(&transcript_type),
             &options.chrmap_file,
             &options.vizchrmap_file)?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
         writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type[0].as_ref(),
+            options.transcript_type.get(0).unwrap_or(&transcript_type),
             &options.chrmap_file,
             &options.vizchrmap_file)?
     } else {
