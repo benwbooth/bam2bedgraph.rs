@@ -665,13 +665,15 @@ impl IndexedAnnotation {
         bed_file: &str, 
         exon_types: &[String],
         cds_types: &[String],
-        transcript_types: &[String])
+        transcript_types: &[String],
+        gene_types: &[String])
         -> Result<()>
     {
         let exon_types = exon_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
         let mut cds_types = cds_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
         if cds_types.is_empty() { cds_types.insert(String::from("CDS")); }
         let transcript_types = transcript_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
+        let gene_types = gene_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
         let mut seen_transcript = HashSet::<usize>::new();
         let mut transcript_names = HashSet::<String>::new();
         
@@ -681,100 +683,107 @@ impl IndexedAnnotation {
             chrs.sort_by_key(|a| a.as_bytes());
             for chr in chrs {
                 for node in self.tree[chr].find(0..std::u64::MAX) {
-                    let transcript_row = node.data();
-                    if !seen_transcript.contains(transcript_row) {
-                        let transcript = &self.rows[*transcript_row];
-                        if transcript_types.is_empty() || transcript_types.contains(&transcript.feature_type) {
-                            seen_transcript.insert(*transcript_row);
-                            
-                            // get the exon and CDS features
-                            let mut exons = Vec::<usize>::new();
-                            let mut cds_features = Vec::<usize>::new();
-                            let mut exon_starts = HashSet::<u64>::new();
-                            let mut exon_ends = HashSet::<u64>::new();
-                            if let Some(child_rows) = self.row2children.get(transcript_row) {
-                                for child_row in child_rows {
-                                    let child = &self.rows[*child_row];
-                                    if child.seqname == transcript.seqname {
-                                        if cds_types.contains(&child.feature_type) {
-                                            cds_features.push(*child_row);
+                    let gene_row = node.data();
+                    let gene = &self.rows[*gene_row];
+                    if gene_types.is_empty() || gene_types.contains(&gene.feature_type) {
+                        if let Some(ref gene_children) = self.row2children.get(gene_row) {
+                            for transcript_row in gene_children.iter() {
+                                if !seen_transcript.contains(transcript_row) {
+                                    let transcript = &self.rows[*transcript_row];
+                                    if transcript_types.is_empty() || transcript_types.contains(&transcript.feature_type) {
+                                        seen_transcript.insert(*transcript_row);
+                                        
+                                        // get the exon and CDS features
+                                        let mut exons = Vec::<usize>::new();
+                                        let mut cds_features = Vec::<usize>::new();
+                                        let mut exon_starts = HashSet::<u64>::new();
+                                        let mut exon_ends = HashSet::<u64>::new();
+                                        if let Some(child_rows) = self.row2children.get(transcript_row) {
+                                            for child_row in child_rows {
+                                                let child = &self.rows[*child_row];
+                                                if child.seqname == transcript.seqname {
+                                                    if cds_types.contains(&child.feature_type) {
+                                                        cds_features.push(*child_row);
+                                                    }
+                                                    else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
+                                                        exon_starts.insert(self.rows[*child_row].start-1);
+                                                        exon_ends.insert(self.rows[*child_row].end);
+                                                        exons.push(*child_row);
+                                                    }
+                                                }
+                                            }
                                         }
-                                        else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
-                                            exon_starts.insert(self.rows[*child_row].start-1);
-                                            exon_ends.insert(self.rows[*child_row].end);
-                                            exons.push(*child_row);
+                                        if exons.is_empty() { exons.push(*transcript_row); }
+                                        exons.sort_by_key(|a| self.rows[*a].start);
+                                        cds_features.sort_by_key(|a| self.rows[*a].start);
+                                        
+                                        // get the cds ranges by unsplicing the CDS features
+                                        let mut cdss = Vec::<Range<u64>>::new();
+                                        for cds_feature_row in cds_features {
+                                            let cds_feature = &self.rows[cds_feature_row];
+                                            if !cdss.is_empty() && 
+                                                exon_ends.contains(&cdss[cdss.len()-1].end) && 
+                                                exon_starts.contains(&(cds_feature.start-1)) 
+                                            {
+                                                // extend current CDS if this is a splice
+                                                if let Some(last) = cdss.last_mut() {
+                                                    (*last).end = cds_feature.end;
+                                                }
+                                            }
+                                            else {
+                                                // otherwise add new CDS
+                                                cdss.push((cds_feature.start-1)..cds_feature.end);
+                                            }
+                                        }
+                                        cdss.sort_by_key(|a| a.start);
+                                        
+                                        // write the bed record
+                                        let score = 0;
+                                        let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
+                                        let start = self.rows[exons[0]].start-1;
+                                        let end = self.rows[exons[exons.len()-1]].end;
+                                        // make a separate bed record for each cds
+                                        if cdss.is_empty() { cdss.push(start..start) }
+                                        for cds in cdss {
+                                            // choose a unique transcript name
+                                            let transcript_name = 
+                                                transcript.attributes.get("transcript_name").or_else(||
+                                                transcript.attributes.get("Name").or_else(||
+                                                transcript.attributes.get("ID")));
+                                            let mut transcript_name = match transcript_name {
+                                                Some(t) => t.clone(),
+                                                None => String::from(format!("{}:{}..{}:{}", 
+                                                    transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
+                                            };
+                                            while transcript_names.contains(&transcript_name) {
+                                                lazy_static! {
+                                                    static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
+                                                }
+                                                transcript_name = String::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
+                                                    format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                                            }
+                                            transcript_names.insert(transcript_name.clone());
+                                            
+                                            let chr = self.vizchrmap.get(&transcript.seqname).unwrap_or(&transcript.seqname);
+                                            // write the bed line
+                                            let line = &[
+                                                &chr,
+                                                &start.to_string(),
+                                                &end.to_string(),
+                                                &transcript_name,
+                                                &score.to_string(),
+                                                &transcript.strand,
+                                                &cds.start.to_string(),
+                                                &cds.end.to_string(),
+                                                item_rgb,
+                                                &exons.len().to_string(),
+                                                &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
+                                                &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
+                                            ].iter().join("\t");
+                                            writeln!(bw, "{}", line)?;
                                         }
                                     }
                                 }
-                            }
-                            if exons.is_empty() { exons.push(*transcript_row); }
-                            exons.sort_by_key(|a| self.rows[*a].start);
-                            cds_features.sort_by_key(|a| self.rows[*a].start);
-                            
-                            // get the cds ranges by unsplicing the CDS features
-                            let mut cdss = Vec::<Range<u64>>::new();
-                            for cds_feature_row in cds_features {
-                                let cds_feature = &self.rows[cds_feature_row];
-                                if !cdss.is_empty() && 
-                                    exon_ends.contains(&cdss[cdss.len()-1].end) && 
-                                    exon_starts.contains(&(cds_feature.start-1)) 
-                                {
-                                    // extend current CDS if this is a splice
-                                    if let Some(last) = cdss.last_mut() {
-                                        (*last).end = cds_feature.end;
-                                    }
-                                }
-                                else {
-                                    // otherwise add new CDS
-                                    cdss.push(cds_feature.start-1..cds_feature.end);
-                                }
-                            }
-                            cdss.sort_by_key(|a| a.start);
-                            
-                            // write the bed record
-                            let score = 0;
-                            let item_rgb = &[0,0,0].iter().map(|v| v.to_string()).join(",");
-                            let start = self.rows[exons[0]].start-1;
-                            let end = self.rows[exons[exons.len()-1]].end;
-                            // make a separate bed record for each cds
-                            if cdss.is_empty() { cdss.push(start..start) }
-                            for cds in cdss {
-                                // choose a unique transcript name
-                                let transcript_name = 
-                                    transcript.attributes.get("transcript_name").or_else(||
-                                    transcript.attributes.get("Name").or_else(||
-                                    transcript.attributes.get("ID")));
-                                let mut transcript_name = match transcript_name {
-                                    Some(t) => t.clone(),
-                                    None => String::from(format!("{}:{}..{}:{}", 
-                                        transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
-                                };
-                                while transcript_names.contains(&transcript_name) {
-                                    lazy_static! {
-                                        static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
-                                    }
-                                    transcript_name = String::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
-                                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
-                                }
-                                transcript_names.insert(transcript_name.clone());
-                                
-                                let chr = self.vizchrmap.get(&transcript.seqname).unwrap_or(&transcript.seqname);
-                                // write the bed line
-                                let line = &[
-                                    &chr,
-                                    &start.to_string(),
-                                    &end.to_string(),
-                                    &transcript_name,
-                                    &score.to_string(),
-                                    &transcript.strand,
-                                    &cds.start.to_string(),
-                                    &cds.end.to_string(),
-                                    item_rgb,
-                                    &exons.len().to_string(),
-                                    &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
-                                    &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
-                                ].iter().join("\t");
-                                writeln!(bw, "{}", line)?;
                             }
                         }
                     }
@@ -795,12 +804,13 @@ impl IndexedAnnotation {
         exon_types: &[String],
         cds_types: &[String],
         transcript_types: &[String],
+        gene_types: &[String],
         trackdb: &mut BufWriter<Box<Write>>)
         -> Result<()> 
     {
         // write the bed file
         let bed_file = format!("{}.bed", file);
-        self.to_bed(&bed_file, exon_types, cds_types, transcript_types)?;
+        self.to_bed(&bed_file, exon_types, cds_types, transcript_types, gene_types)?;
         
         // write the genome file
         let genome_filename = format!("{}.genome", file);
@@ -2118,6 +2128,7 @@ fn write_enriched_annotation(
             &options.exon_type, 
             &options.cds_type, 
             &options.transcript_type,
+            &options.gene_type,
             trackdb)?; 
     }
     Ok(())
@@ -2217,6 +2228,7 @@ fn run() -> Result<()> {
             &options.exon_type, 
             &options.cds_type, 
             &options.transcript_type,
+            &options.gene_type,
             &mut trackdb)?; 
     }
     if let Some(ref debug_annot_json) = options.debug_annot_json {
