@@ -2107,9 +2107,10 @@ fn write_enriched_annotation(
     }
     
     if let Some(ref debug_outannot_bigbed) = options.debug_outannot_bigbed {
+        let transcript_type = String::from("transcript");
         let newannot = IndexedAnnotation::from_gff(&outannot, 
             options.gene_type.get(0).r()?, 
-            options.transcript_type.get(0).r()?, 
+            options.transcript_type.get(0).unwrap_or(&transcript_type), 
             &options.chrmap_file,
             &options.vizchrmap_file)?;
         newannot.to_bigbed(
