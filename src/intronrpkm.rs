@@ -1835,12 +1835,14 @@ fn write_enriched_annotation(
         // get the set of transcript -> pair associations
         let mut transcript2pair = HashMap::<usize,HashSet<usize>>::new();
         for (i, pair) in reannotated_pairs.iter().enumerate() {
-            if let Some(ref exon1parents) = annot.row2parents.get(&pair.exon1_row) {
-                if let Some(ref exon2parents) = annot.row2parents.get(&pair.exon2_row) {
-                    let exon2parents = exon2parents.iter().collect::<HashSet<_>>();
-                    for transcript_row in exon1parents.iter() {
-                        if exon2parents.contains(transcript_row) {
-                            transcript2pair.entry(*transcript_row).or_insert_with(HashSet::new).insert(i);
+            if !pair.cassettes.is_empty() {
+                if let Some(ref exon1parents) = annot.row2parents.get(&pair.exon1_row) {
+                    if let Some(ref exon2parents) = annot.row2parents.get(&pair.exon2_row) {
+                        let exon2parents = exon2parents.iter().collect::<HashSet<_>>();
+                        for transcript_row in exon1parents.iter() {
+                            if exon2parents.contains(transcript_row) {
+                                transcript2pair.entry(*transcript_row).or_insert_with(HashSet::new).insert(i);
+                            }
                         }
                     }
                 }
@@ -1871,26 +1873,8 @@ fn write_enriched_annotation(
             if !any_new_pairs { continue }
                 
             // find unique transcript IDs and names
-            let mut id = transcript.attributes.get("ID").map(|s| format!("{}.reannot", s));
-            let mut name = transcript.attributes.get("Name").map(|s| format!("{}.reannot", s));
             let mut transcript_id = transcript.attributes.get("transcript_id").map(|s| format!("{}.reannot", s));
             let mut transcript_name = transcript.attributes.get("transcript_name").map(|s| format!("{}.reannot", s));
-            id = if let Some(mut id) = id {
-                while ids.contains(&id) {
-                    id = String::from(TRANSCRIPT_RENAME.replace(&id.as_ref(), |caps: &Captures| {
-                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
-                }
-                ids.insert(id.clone());
-                Some(id)
-            } else {id};
-            name = if let Some(mut name) = name {
-                while ids.contains(&name) {
-                    name = String::from(TRANSCRIPT_RENAME.replace(&name.as_ref(), |caps: &Captures| {
-                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
-                }
-                names.insert(name.clone());
-                Some(name)
-            } else {name};
             transcript_id = if let Some(mut transcript_id) = transcript_id {
                 while ids.contains(&transcript_id) {
                     transcript_id = String::from(TRANSCRIPT_RENAME.replace(&transcript_id.as_ref(), |caps: &Captures| {
@@ -1909,10 +1893,10 @@ fn write_enriched_annotation(
             } else {transcript_name};
             // create a new transcript record
             let mut new_transcript = transcript.clone();
-            if new_transcript.attributes.contains_key("ID") && id.is_some() 
-                {new_transcript.attributes.insert("ID".to_string(), id.clone().r()?);};
-            if new_transcript.attributes.contains_key("Name") && name.is_some() 
-                {new_transcript.attributes.insert("Name".to_string(), name.clone().r()?);};
+            if new_transcript.attributes.contains_key("ID") && transcript_id.is_some() 
+                {new_transcript.attributes.insert("ID".to_string(), transcript_id.clone().r()?);};
+            if new_transcript.attributes.contains_key("Name") && transcript_name.is_some() 
+                {new_transcript.attributes.insert("Name".to_string(), transcript_name.clone().r()?);};
             if new_transcript.attributes.contains_key("transcript_id") && transcript_id.is_some() 
                 {new_transcript.attributes.insert("transcript_id".to_string(), transcript_id.clone().r()?);};
             if new_transcript.attributes.contains_key("transcript_name") && transcript_name.is_some() 
@@ -1936,16 +1920,17 @@ fn write_enriched_annotation(
                         cdstree.insert(Interval::new((child.start - 1)..(child.end))?, *child_row);
                     }
                     // update the parents list with the new transcript ID
+                    let mut newparents = Vec::<String>::new();
                     if let Some(parent) = child.attributes.get("Parent") {
                         if let Some(oldid) = transcript.attributes.get("ID") {
-                            if let Some(id) = id.clone() {
-                                let mut newparents = Vec::<String>::new();
+                            if let Some(ref id) = transcript_id {
                                 for p in parent.split(",") {
                                     newparents.push(if p == oldid {id.clone()} else {p.to_string()});
                                 }
                             }
                         }
                     }
+                    child.attributes.insert("Parent".to_string(), newparents.join(","));
                     // update transcript_id and transcript_name attributes
                     if child.attributes.contains_key("transcript_id") {
                         if let Some(transcript_id) = transcript_id.clone() {
@@ -2043,7 +2028,7 @@ fn write_enriched_annotation(
                         if let Some(cassette_id) = cassette_id {
                             attributes.insert("ID".to_string(), cassette_id);
                         }
-                        if let Some(ref id) = id {
+                        if let Some(ref id) = transcript_id {
                             attributes.insert("Parent".to_string(), id.clone());
                         }
                         if let Some(ref transcript_id) = transcript_id {
@@ -2151,17 +2136,17 @@ fn run() -> Result<()> {
          else { options.cds_type.clone() }).into_iter().collect();
     // set debug options if --debug flag is set
     if options.debug {
-        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}_annot.gff", options.debug_prefix)) }
-        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}_annot.gtf", options.debug_prefix)) }
-        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}_annot.bb", options.debug_prefix)) }
-        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}_annot.json", options.debug_prefix)) }
-        if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(format!("{}_exon.bb", options.debug_prefix)) }
-        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(format!("{}_intronrpkm", options.debug_prefix)) }
-        if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(format!("{}_reannot.bb", options.debug_prefix)) }
-        if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(format!("{}_rpkm.bb", options.debug_prefix)) }
-        if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(format!("{}_rpkmstats.json", options.debug_prefix)) }
-        if options.debug_trackdb.is_none() { options.debug_trackdb = Some(format!("{}_trackDb.txt", options.debug_prefix)) }
-        if options.debug_outannot_bigbed.is_none() { options.debug_outannot_bigbed = Some(format!("{}_outannot.bb", options.debug_prefix)) }
+        if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}.annot.gff", options.debug_prefix)) }
+        // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}.annot.gtf", options.debug_prefix)) }
+        if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}.annot.bb", options.debug_prefix)) }
+        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}.annot.json", options.debug_prefix)) }
+        if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(format!("{}.exon.bb", options.debug_prefix)) }
+        if options.debug_bigwig.is_none() { options.debug_bigwig = Some(format!("{}.intronrpkm", options.debug_prefix)) }
+        if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(format!("{}.reannot.bb", options.debug_prefix)) }
+        if options.debug_rpkm_region_bigbed.is_none() { options.debug_rpkm_region_bigbed = Some(format!("{}.rpkm.bb", options.debug_prefix)) }
+        if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(format!("{}.rpkmstats.json", options.debug_prefix)) }
+        if options.debug_trackdb.is_none() { options.debug_trackdb = Some(format!("{}.trackDb.txt", options.debug_prefix)) }
+        if options.debug_outannot_bigbed.is_none() { options.debug_outannot_bigbed = Some(format!("{}.outannot.bb", options.debug_prefix)) }
     }
     
     // set up the trackdb writer
