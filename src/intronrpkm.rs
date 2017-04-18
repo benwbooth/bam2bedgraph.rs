@@ -1893,14 +1893,26 @@ fn write_enriched_annotation(
             } else {transcript_name};
             // create a new transcript record
             let mut new_transcript = transcript.clone();
-            if new_transcript.attributes.contains_key("ID") && transcript_id.is_some() 
-                {new_transcript.attributes.insert("ID".to_string(), transcript_id.clone().r()?);};
-            if new_transcript.attributes.contains_key("Name") && transcript_name.is_some() 
-                {new_transcript.attributes.insert("Name".to_string(), transcript_name.clone().r()?);};
-            if new_transcript.attributes.contains_key("transcript_id") && transcript_id.is_some() 
-                {new_transcript.attributes.insert("transcript_id".to_string(), transcript_id.clone().r()?);};
-            if new_transcript.attributes.contains_key("transcript_name") && transcript_name.is_some() 
-                {new_transcript.attributes.insert("transcript_name".to_string(), transcript_name.clone().r()?);};
+            if let Some(ref transcript_id) = transcript_id {
+                {   let mut entry = new_transcript.attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                    entry.clear();
+                    entry.push_str(&mut transcript_id.clone());
+                }
+                {   let mut entry = new_transcript.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                    entry.clear();
+                    entry.push_str(&mut transcript_id.clone());
+                }
+            }
+            if let Some(ref transcript_name) = transcript_name {
+                {   let mut entry = new_transcript.attributes.entry("Name".to_string()).or_insert_with(|| "".to_string());
+                    entry.clear();
+                    entry.push_str(&mut transcript_name.clone());
+                }
+                {   let mut entry = new_transcript.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                    entry.clear();
+                    entry.push_str(&mut transcript_name.clone());
+                }
+            }
             // write new transcript record to file
             records.push(new_transcript);
             
@@ -1930,16 +1942,24 @@ fn write_enriched_annotation(
                             }
                         }
                     }
-                    child.attributes.insert("Parent".to_string(), newparents.join(","));
+                    
+                    {   let mut entry = child.attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
+                        entry.clear();
+                        entry.push_str(&mut newparents.join(","));
+                    }
                     // update transcript_id and transcript_name attributes
                     if child.attributes.contains_key("transcript_id") {
-                        if let Some(transcript_id) = transcript_id.clone() {
-                            child.attributes.insert("transcript_id".to_string(), transcript_id);
+                        if let Some(ref transcript_id) = transcript_id {
+                            let mut entry = child.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut transcript_id.clone());
                         }
                     }
                     if child.attributes.contains_key("transcript_name") {
-                        if let Some(transcript_name) = transcript_name.clone() {
-                            child.attributes.insert("transcript_name".to_string(), transcript_name);
+                        if let Some(ref transcript_name) = transcript_name {
+                            let mut entry = child.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut transcript_name.clone());
                         }
                     }
                     // store child record
@@ -1964,13 +1984,17 @@ fn write_enriched_annotation(
                                 }
                                 // update transcript_id and transcript_name attributes
                                 if cc.attributes.contains_key("transcript_id") {
-                                    if let Some(transcript_id) = transcript_id.clone() {
-                                        cc.attributes.insert("transcript_id".to_string(), transcript_id);
+                                    if let Some(ref transcript_id) = transcript_id {
+                                        let mut entry = cc.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                                        entry.clear();
+                                        entry.push_str(&mut transcript_id.clone());
                                     }
                                 }
                                 if cc.attributes.contains_key("transcript_name") {
-                                    if let Some(transcript_name) = transcript_name.clone() {
-                                        cc.attributes.insert("transcript_name".to_string(), transcript_name);
+                                    if let Some(ref transcript_name) = transcript_name {
+                                        let mut entry = cc.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                                        entry.clear();
+                                        entry.push_str(&mut transcript_name.clone());
                                     }
                                 }
                                 // write child record
@@ -2026,16 +2050,24 @@ fn write_enriched_annotation(
                         
                         let mut attributes = exon1.attributes.clone();
                         if let Some(cassette_id) = cassette_id {
-                            attributes.insert("ID".to_string(), cassette_id);
-                        }
-                        if let Some(ref id) = transcript_id {
-                            attributes.insert("Parent".to_string(), id.clone());
+                            let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut cassette_id.clone());
                         }
                         if let Some(ref transcript_id) = transcript_id {
-                            attributes.insert("transcript_id".to_string(), transcript_id.clone());
+                            let mut entry = attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut transcript_id.clone());
+                        }
+                        if let Some(ref transcript_id) = transcript_id {
+                            let mut entry = attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut transcript_id.clone());
                         }
                         if let Some(ref transcript_name) = transcript_name {
-                            attributes.insert("transcript_name".to_string(), transcript_name.clone());
+                            let mut entry = attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                            entry.clear();
+                            entry.push_str(&mut transcript_name.clone());
                         }
                         
                         let record = Record {
@@ -2064,7 +2096,9 @@ fn write_enriched_annotation(
                                 Some(cds_id)
                             } else {cds_id};
                             if let Some(cds_id) = cds_id {
-                                attributes.insert("ID".to_string(), cds_id);
+                                let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                                entry.clear();
+                                entry.push_str(&mut cds_id.clone());
                             }
                             let record = Record {
                                 row: 0,
