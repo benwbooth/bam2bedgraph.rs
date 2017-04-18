@@ -824,7 +824,7 @@ impl IndexedAnnotation {
         // call bedToBigBed
         cmd!("bedToBigBed","-type=bed12","-tab","-extraIndex=name", &bed_file, &genome_filename, &file).run()?;
         // remove the bed file
-        // std::fs::remove_file(&bed_file)?;
+        std::fs::remove_file(&bed_file)?;
         // remove the genome file
         std::fs::remove_file(&genome_filename)?;
         
