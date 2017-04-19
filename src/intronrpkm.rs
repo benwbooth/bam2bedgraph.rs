@@ -435,7 +435,7 @@ impl IndexedAnnotation {
                 for (row, record) in rows.iter().enumerate() {
                     if let Some(parent) = record.attributes.get("Parent") {
                         for p in parent.split(',') {
-                            if let Some(parentrow) = id2row.get(&String::from(p)) {
+                            if let Some(parentrow) = id2row.get(p) {
                                 row2parents.entry(row)
                                     .or_insert_with(BTreeSet::new)
                                     .insert(*parentrow);
@@ -909,7 +909,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                                     exon.strand == transcript.strand 
                                 {
                                     transcript_rows.push(*transcript_row);
-                                    break 'transcript_row;
+                                    continue 'transcript_row;
                                 }
                             }
                         }
