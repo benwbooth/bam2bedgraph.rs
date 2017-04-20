@@ -966,12 +966,8 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                     // look at constituitive splices
                     if splices.len() == transcript_rows.len() {
                         let mut exon_rows = HashSet::<(usize,usize)>::new();
-                        let mut cassette_rows = HashSet::<usize>::new();
-                        for (_, exon1_row, exon2_row, cassette_row) in splices {
+                        for (_, exon1_row, exon2_row, _) in splices {
                             exon_rows.insert((exon1_row, exon2_row));
-                            if let Some(cassette_row) = cassette_row {
-                                cassette_rows.insert(cassette_row);
-                            }
                         }
                         // sort by shortest sum of exon lengths
                         let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
@@ -983,15 +979,10 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                             // then sort by lowest exon2_row
                             then_with(|| a.1.cmp(&b.1)));
                         if let Some(exon_row) = exon_rows.get(0) {
-                            let mut cassettes = cassette_rows.iter().map(|r| Cassette {
-                                range: (&annot.rows[*r].start-1)..annot.rows[*r].end,
-                                cassette_row: Some(*r),
-                            }).collect::<Vec<_>>();
-                            cassettes.sort_by_key(|a| a.range.start);
                             exonpairs.push(ConstituitivePair {
                                 exon1_row: exon_row.0,
                                 exon2_row: exon_row.1,
-                                cassettes: cassettes,
+                                cassettes: Vec::new(),
                             });
                         }
                     }
