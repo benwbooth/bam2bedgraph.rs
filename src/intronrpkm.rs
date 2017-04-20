@@ -888,7 +888,12 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
         if gene_types.is_empty() || gene_types.contains(&gene.feature_type) {
             if let Some(feature_rows) = annot.row2children.get(&gene_row) {
                 // get the transcript rows for this gene
-                let mut transcript_rows = Vec::<usize>::new();
+                let mut transcript_rows = HashSet::<usize>::new();
+                let mut transcript2exon = HashMap::<usize,HashSet<usize>>::new();
+                let mut start2transcript = HashMap::<u64,HashSet<usize>>::new();
+                let mut end2transcript = HashMap::<u64,HashSet<usize>>::new();
+                // splice start..splice end -> vec![(transcript_row, exon1_row, exon2_row, Some(cassette_row)]
+                let mut splices = HashMap::<Range<u64>,Vec<(usize,usize,usize,Option<usize>)>>::new();
                 'transcript_row:
                 for transcript_row in feature_rows {
                     let transcript = &annot.rows[*transcript_row];
@@ -899,102 +904,98 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                         transcript.seqname == gene.seqname &&
                         transcript.strand == gene.strand 
                     {
-                        // make sure the transcript has at least 1 exon
                         if let Some(exon_rows) = annot.row2children.get(transcript_row) {
-                            for exon_row in exon_rows {
+                            // first get exon start/stop -> transcript associations
+                            // and splice start/stop -> transcript associations
+                            for (i, exon_row) in exon_rows.iter().enumerate() {
                                 let exon = &annot.rows[*exon_row];
-                                if (exon_types.is_empty() || 
-                                        exon_types.contains(&exon.feature_type)) &&
-                                    exon.seqname == transcript.seqname && 
-                                    exon.strand == transcript.strand 
-                                {
-                                    transcript_rows.push(*transcript_row);
-                                    continue 'transcript_row;
+                                if exon_types.is_empty() || exon_types.contains(&exon.feature_type) {
+                                    // skip any transcripts with weird exons
+                                    if exon.seqname != transcript.seqname || exon.strand != transcript.strand {
+                                        continue 'transcript_row;
+                                    }
+                                    // make sure the transcript has at least 1 exon
+                                    transcript_rows.insert(*transcript_row);
+                                    // record the transcript's exon starts/ends
+                                    transcript2exon.entry(*transcript_row).or_insert_with(HashSet::new).
+                                        insert(*exon_row);
+                                    // record the transcript's splice starts/ends
+                                    if i > 0 {
+                                        start2transcript.entry(exon.start-1).or_insert_with(HashSet::new).
+                                            insert(*transcript_row);
+                                    }
+                                    if i < exon_rows.len()-1 {
+                                        end2transcript.entry(exon.end).or_insert_with(HashSet::new).
+                                            insert(*transcript_row);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                // (exon1_row, exon2_row) -> (cassette_rows, transcript_rows)
-                let mut constituitive_pairs = HashMap::<(usize,usize),(HashSet<usize>,HashSet<usize>)>::new();
-                // look in each transcript
-                'transcript: 
                 for transcript_row in &transcript_rows {
-                    let transcript = &annot.rows[*transcript_row];
-                    if let Some(feature_rows) = annot.row2children.get(transcript_row) {
-                        // get the set of exon features we care about
-                        let mut exon_rows = Vec::<usize>::new();
-                        for feature_row in feature_rows {
-                            let feature = &annot.rows[*feature_row];
-                            if exon_types.contains(&feature.feature_type) {
-                                // skip any transcripts with weird exons
-                                if feature.seqname != transcript.seqname || feature.strand != transcript.strand {
-                                    continue 'transcript;
-                                }
-                                exon_rows.push(*feature_row);
-                            }
-                        }
-                        // get the constituitive exons
-                        let mut constituitive = HashSet::<usize>::new();
-                        'exon: 
-                        for exon_row in &exon_rows {
-                            if let Some(parent_rows) = annot.row2parents.get(exon_row) {
-                                let parents: HashSet<_> = parent_rows.iter().collect();
-                                // are there any transcripts in this gene that this exon
-                                // does NOT have as a parent?
-                                for transcript_row in &transcript_rows {
-                                    if !parents.contains(transcript_row) {
-                                        continue 'exon;
-                                    }
-                                }
-                                constituitive.insert(*exon_row);
-                            }
-                        }
-                        // get pairs of constituitive exons
-                        for (rank, exon_row) in exon_rows.iter().enumerate() {
-                            if rank < exon_rows.len()-1 && constituitive.contains(exon_row) {
+                    if let Some(exon_rows) = transcript2exon.get(&transcript_row) {
+                        let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
+                        exon_rows.sort_by_key(|a| &annot.rows[**a].start);
+                        for (i, exon_row) in exon_rows.iter().enumerate() {
+                            let exon = &annot.rows[**exon_row];
+                            if i < exon_rows.len()-1 && end2transcript[&exon.end].len() == transcript_rows.len() {
                                 // two adjacent constitutive exons
-                                let adjacent_row = exon_rows[rank+1];
-                                if constituitive.contains(&adjacent_row) {
-                                    let cp = constituitive_pairs.entry(
-                                        (*exon_row, adjacent_row)).
-                                        or_insert_with(|| (HashSet::new(), HashSet::new()));
-                                    cp.1.insert(*transcript_row);
+                                let adjacent_row = exon_rows[i+1];
+                                let adjacent_exon = &annot.rows[*adjacent_row];
+                                if start2transcript[&(adjacent_exon.start-1)].len() == transcript_rows.len() {
+                                    splices.entry(exon.end..(adjacent_exon.start-1)).
+                                        or_insert_with(Vec::new).
+                                        push((*transcript_row, **exon_row, *adjacent_row, None));
                                 }
                                 // two constituitive exons with a single cassette inbetween
-                                else if rank < exon_rows.len()-2 {
-                                    let next_row = exon_rows[rank+2];
-                                    if constituitive.contains(&next_row) {
-                                        let cp = constituitive_pairs.entry(
-                                            (*exon_row, next_row)).
-                                            or_insert_with(|| (HashSet::new(), HashSet::new()));
-                                        cp.0.insert(adjacent_row);
-                                        cp.1.insert(*transcript_row);
+                                else if i < exon_rows.len()-2 {
+                                    let next_row = exon_rows[i+2];
+                                    let next_exon = &annot.rows[*next_row];
+                                    if start2transcript[&(next_exon.start-1)].len() == transcript_rows.len() {
+                                        splices.entry(exon.end..(next_exon.start-1)).
+                                            or_insert_with(Vec::new).
+                                            push((*transcript_row, **exon_row, *next_row, Some(*adjacent_row)));
                                     }
                                 }
                             }
                         }
                     }
                 }
-                // filter out constituitive pairs that do not cover every transcript
-                let mut valid_constituitive_pairs: Vec<_> = constituitive_pairs.iter().
-                    filter(|p| (p.1).1.len() == transcript_rows.len()).
-                    map(|p| {
-                        // sort the cassettes
-                        let mut cassettes = 
-                            (p.1).0.iter().map(|c| Cassette {
-                                    range: (annot.rows[*c].start-1)..annot.rows[*c].end, 
-                                    cassette_row: Some(*c),
-                                }).collect::<Vec<_>>();
-                        cassettes.sort_by_key(|a| a.range.start);
-                        
-                        ConstituitivePair {
-                            exon1_row: (p.0).0,
-                            exon2_row: (p.0).1,
-                            cassettes: cassettes,
-                        }}).
-                    collect();
-                exonpairs.append(&mut valid_constituitive_pairs);
+                for (_, splices) in splices {
+                    // look at constituitive splices
+                    if splices.len() == transcript_rows.len() {
+                        let mut exon_rows = HashSet::<(usize,usize)>::new();
+                        let mut cassette_rows = HashSet::<usize>::new();
+                        for (_, exon1_row, exon2_row, cassette_row) in splices {
+                            exon_rows.insert((exon1_row, exon2_row));
+                            if let Some(cassette_row) = cassette_row {
+                                cassette_rows.insert(cassette_row);
+                            }
+                        }
+                        // sort by shortest sum of exon lengths
+                        let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
+                        exon_rows.sort_by(|a,b| 
+                            ((&annot.rows[a.0].end-&annot.rows[a.0].start+1) + (&annot.rows[a.1].end-&annot.rows[a.1].start+1)).
+                            cmp(&((&annot.rows[b.0].end-&annot.rows[b.0].start+1) + (&annot.rows[b.1].end-&annot.rows[b.1].start+1)))
+                            // then sort by lowest exon1_row 
+                            .then_with(|| a.0.cmp(&b.0)).
+                            // then sort by lowest exon2_row
+                            then_with(|| a.1.cmp(&b.1)));
+                        if let Some(exon_row) = exon_rows.get(0) {
+                            let mut cassettes = cassette_rows.iter().map(|r| Cassette {
+                                range: (&annot.rows[*r].start-1)..annot.rows[*r].end,
+                                cassette_row: Some(*r),
+                            }).collect::<Vec<_>>();
+                            cassettes.sort_by_key(|a| a.range.start);
+                            exonpairs.push(ConstituitivePair {
+                                exon1_row: exon_row.0,
+                                exon2_row: exon_row.1,
+                                cassettes: cassettes,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
