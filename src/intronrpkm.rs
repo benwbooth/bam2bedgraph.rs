@@ -824,7 +824,7 @@ impl IndexedAnnotation {
         // call bedToBigBed
         cmd!("bedToBigBed","-type=bed12","-tab","-extraIndex=name", &bed_file, &genome_filename, &file).run()?;
         // remove the bed file
-        std::fs::remove_file(&bed_file)?;
+        //std::fs::remove_file(&bed_file)?;
         // remove the genome file
         std::fs::remove_file(&genome_filename)?;
         
@@ -952,7 +952,9 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                                 else if i < exon_rows.len()-2 {
                                     let next_row = exon_rows[i+2];
                                     let next_exon = &annot.rows[*next_row];
-                                    if start2transcript[&(next_exon.start-1)].len() == transcript_rows.len() {
+                                    if end2transcript[&(adjacent_exon.end)].len() != transcript_rows.len() &&
+                                        start2transcript[&(next_exon.start-1)].len() == transcript_rows.len() 
+                                    {
                                         splices.entry(exon.end..(next_exon.start-1)).
                                             or_insert_with(Vec::new).
                                             push((*transcript_row, **exon_row, *next_row, Some(*adjacent_row)));
@@ -1963,6 +1965,9 @@ fn write_enriched_annotation(
                             entry.push_str(&mut transcript_name.clone());
                         }
                     }
+                    if let Some(id) = child.attributes.get("ID") {
+                        ids.insert(id.clone());
+                    }
                     // store child record
                     records.push(child);
                     
@@ -2006,6 +2011,9 @@ fn write_enriched_annotation(
                                         entry.clear();
                                         entry.push_str(&mut transcript_name.clone());
                                     }
+                                }
+                                if let Some(id) = cc.attributes.get("ID") {
+                                    ids.insert(id.clone());
                                 }
                                 // write child record
                                 records.push(cc);
