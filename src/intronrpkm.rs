@@ -1914,9 +1914,18 @@ fn write_enriched_annotation(
             let mut cdstree = IntervalTree::<u64,usize>::new();
             // for each child of the original transcript
             if let Some(ref transcript_row2children) = annot.row2children.get(transcript_row) {
+                'child:
                 for child_row in transcript_row2children.iter() {
                     // make a copy
                     let mut child = annot.rows[*child_row].clone();
+                    // if this is a cassette that overlaps a reannotated pair,
+                    // do not include it
+                    for pair_row in &transcript2pair[transcript_row] {
+                        let pair = &reannotated_pairs[*pair_row];
+                        if child.start-1 < annot.rows[pair.exon2_row].start-1 &&
+                            annot.rows[pair.exon1_row].end < child.end
+                        { continue 'child; }
+                    }
                     // populate featurestarts/stops and cdstree
                     featurestarts.insert((child.feature_type.clone(), child.start-1));
                     featurestops.insert((child.feature_type.clone(), child.end));
@@ -1965,10 +1974,19 @@ fn write_enriched_annotation(
                     }
                     while !children.is_empty() {
                         let mut newchildren = Vec::<usize>::new();
+                        'cc:
                         for c in children {
                             if !seen.contains(&c)  {
                                 seen.insert(c);
                                 let mut cc = annot.rows[c].clone();
+                                // if this is a cassette that overlaps a reannotated pair,
+                                // do not include it
+                                for pair_row in &transcript2pair[transcript_row] {
+                                    let pair = &reannotated_pairs[*pair_row];
+                                    if cc.start-1 < annot.rows[pair.exon2_row].start-1 &&
+                                        annot.rows[pair.exon1_row].end < cc.end
+                                    { continue 'cc; }
+                                }
                                 featurestarts.insert((cc.feature_type.clone(), cc.start-1));
                                 featurestops.insert((cc.feature_type.clone(), cc.end));
                                 if cc.feature_type == "CDS" {
