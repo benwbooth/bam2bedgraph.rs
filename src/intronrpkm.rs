@@ -1846,6 +1846,7 @@ fn write_enriched_annotation(
         // keep track of unique transcript identifiers
         lazy_static! {
             static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
+            static ref EXON_RENAME: Regex = Regex::new(r"(?:[:]([0-9]+))?$").unwrap();
         }
         let mut ids = HashSet::<String>::new();
         let mut names = HashSet::<String>::new();
@@ -1913,7 +1914,6 @@ fn write_enriched_annotation(
             // get a list of feature starts/stops, and a tree of CDS features
             let mut featurestarts = HashSet::<(String,u64)>::new();
             let mut featurestops = HashSet::<(String,u64)>::new();
-            let mut cdstree = IntervalTree::<u64,usize>::new();
             // for each child of the original transcript
             if let Some(ref transcript_row2children) = annot.row2children.get(transcript_row) {
                 'child:
@@ -1928,12 +1928,9 @@ fn write_enriched_annotation(
                             annot.rows[pair.exon1_row].end < child.end
                         { continue 'child; }
                     }
-                    // populate featurestarts/stops and cdstree
+                    // populate featurestarts/stops
                     featurestarts.insert((child.feature_type.clone(), child.start-1));
                     featurestops.insert((child.feature_type.clone(), child.end));
-                    if child.feature_type == "CDS" {
-                        cdstree.insert(Interval::new((child.start - 1)..(child.end))?, *child_row);
-                    }
                     // update the parents list with the new transcript ID
                     let mut newparents = Vec::<String>::new();
                     if let Some(parent) = child.attributes.get("Parent") {
@@ -1965,7 +1962,14 @@ fn write_enriched_annotation(
                             entry.push_str(&mut transcript_name.clone());
                         }
                     }
-                    if let Some(id) = child.attributes.get("ID") {
+                    if let Some(mut id) = child.attributes.get_mut("ID") {
+                        let mut feature_id = format!("{}.reannot", id);
+                        while ids.contains(&feature_id) {
+                            feature_id = String::from(EXON_RENAME.replace(&feature_id.as_ref(), |caps: &Captures| {
+                                format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                        }
+                        id.clear();
+                        id.push_str(&mut feature_id);
                         ids.insert(id.clone());
                     }
                     // store child record
@@ -1994,9 +1998,6 @@ fn write_enriched_annotation(
                                 }
                                 featurestarts.insert((cc.feature_type.clone(), cc.start-1));
                                 featurestops.insert((cc.feature_type.clone(), cc.end));
-                                if cc.feature_type == "CDS" {
-                                    cdstree.insert(Interval::new((cc.start - 1)..(cc.end))?, c);
-                                }
                                 // update transcript_id and transcript_name attributes
                                 if cc.attributes.contains_key("transcript_id") {
                                     if let Some(ref transcript_id) = transcript_id {
@@ -2012,7 +2013,14 @@ fn write_enriched_annotation(
                                         entry.push_str(&mut transcript_name.clone());
                                     }
                                 }
-                                if let Some(id) = cc.attributes.get("ID") {
+                                if let Some(mut id) = cc.attributes.get_mut("ID") {
+                                    let mut feature_id = format!("{}.reannot", id);
+                                    while ids.contains(&feature_id) {
+                                        feature_id = String::from(EXON_RENAME.replace(&feature_id.as_ref(), |caps: &Captures| {
+                                            format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                                    }
+                                    id.clear();
+                                    id.push_str(&mut feature_id);
                                     ids.insert(id.clone());
                                 }
                                 // write child record
@@ -2051,9 +2059,6 @@ fn write_enriched_annotation(
                         else { None };
                     
                     // finally, add the reannotated cassettes
-                    lazy_static! {
-                        static ref EXON_RENAME: Regex = Regex::new(r"(?:[:]([0-9]+))?$").unwrap();
-                    }
                     for cassette in &pair.cassettes {
                         // get a unique ID for the cassette
                         let mut cassette_id = transcript.attributes.get("ID").map(|s| format!("exon:{}:1", s));
@@ -2068,9 +2073,14 @@ fn write_enriched_annotation(
                         
                         let mut attributes = exon1.attributes.clone();
                         if let Some(cassette_id) = cassette_id {
-                            let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
-                            entry.clear();
-                            entry.push_str(&mut cassette_id.clone());
+                            {   let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                                entry.clear();
+                                entry.push_str(&mut cassette_id.clone());
+                            }
+                            {   let mut entry = attributes.entry("exon_id".to_string()).or_insert_with(|| "".to_string());
+                                entry.clear();
+                                entry.push_str(&mut cassette_id.clone());
+                            }
                         }
                         if let Some(ref transcript_id) = transcript_id {
                             let mut entry = attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
@@ -2088,6 +2098,8 @@ fn write_enriched_annotation(
                             entry.push_str(&mut transcript_name.clone());
                         }
                         
+                        let mut attributes = attributes.clone();
+                        attributes.insert("exon_type".to_string(),"cassette".to_string());
                         let record = Record {
                             row: 0,
                             seqname: exon1.seqname.clone(),
@@ -2137,17 +2149,44 @@ fn write_enriched_annotation(
             }
             // compute frame field for all the CDS features
             // write features to output file
-            for record in records {
+            if transcript.strand=="-" {
+                records.sort_by(|a,b| b.start.cmp(&a.start));
+            } else {
+                records.sort_by(|a,b| a.start.cmp(&b.start));
+            }
+            let mut exontree = IntervalTree::<u64,Record>::new();
+            let mut prevcdslen=0;
+            let mut exon_number=1;
+            for record in &mut records {
                 let mut record = record;
                 // compute the frame for CDS features
                 if record.feature_type == "CDS" {
-                    let prevcdslen: u64 = cdstree.find(
-                            if transcript.strand == "-" {record.end..std::u64::MAX}
-                            else {0..(record.start-1)}).
-                        map(|c| annot.rows[*c.data()].end-annot.rows[*c.data()].start+1).sum();
-                    let frame = (prevcdslen % 3).to_string();
-                    record.frame = frame;
+                    record.frame = (prevcdslen % 3).to_string();
+                    prevcdslen += record.end-record.start+1;
                 }
+                // store exons in an interval tree to compute exon_number rank
+                else if record.feature_type == "exon" {
+                    record.attributes.insert("exon_number".to_string(), exon_number.to_string());
+                    exon_number += 1;
+                    exontree.insert(Interval::new((record.start - 1)..(record.end))?, record.clone());
+                }
+            }
+            // compute exon_number rank
+            for record in &mut records {
+                if record.feature_type != "exon" {
+                    for exon in exontree.find(record.start-1..record.end) {
+                        if let Some(exon_number) = exon.data().attributes.get("exon_number") {
+                            if let Some(_) = record.attributes.get("exon_number") {
+                                record.attributes.insert("exon_number".to_string(), exon_number.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if transcript.strand=="-" {
+                records.sort_by(|a,b| b.start.cmp(&a.start));
+            }
+            for record in &mut records {
                 writeln!(output, "{}", record.to_gff()?)?;
             }
         }
