@@ -2166,7 +2166,10 @@ fn write_enriched_annotation(
                 }
                 // store exons in an interval tree to compute exon_number rank
                 else if record.feature_type == "exon" {
-                    record.attributes.insert("exon_number".to_string(), exon_number.to_string());
+                    {   let en = record.attributes.entry("exon_number".to_string()).or_insert_with(|| "".to_string());
+                        en.clear();
+                        en.push_str(&mut exon_number.to_string());
+                    }
                     exon_number += 1;
                     exontree.insert(Interval::new((record.start - 1)..(record.end))?, record.clone());
                 }
@@ -2176,8 +2179,9 @@ fn write_enriched_annotation(
                 if record.feature_type != "exon" {
                     for exon in exontree.find(record.start-1..record.end) {
                         if let Some(exon_number) = exon.data().attributes.get("exon_number") {
-                            if let Some(_) = record.attributes.get("exon_number") {
-                                record.attributes.insert("exon_number".to_string(), exon_number.to_string());
+                            if let Some(mut en) = record.attributes.get_mut("exon_number") {
+                                en.clear();
+                                en.push_str(&mut exon_number.clone());
                             }
                         }
                     }
