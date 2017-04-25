@@ -41,7 +41,9 @@ fn run() -> Result<()> {
                             (overlaps.feature_type == "gene" || overlaps.feature_type == "exon")
                         {
                             if let Some(overlaps_gene_name) = overlaps.attributes.get("gene_name") {
-                                if overlaps_gene_name != record_gene_name {
+                                if overlaps_gene_name != record_gene_name && 
+                                    &format!("{}.reannot", overlaps_gene_name) != record_gene_name 
+                                {
                                     if overlaps.feature_type == "exon" {
                                         *other_genes.entry(overlaps_gene_name.clone()).or_insert(0) += 1;
                                     }
