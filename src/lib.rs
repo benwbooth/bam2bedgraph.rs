@@ -1,6 +1,11 @@
 #![recursion_limit = "1024"]
+#![feature(plugin)]
+#![plugin(indoc)]
 use std::vec::Vec;
 use std::ops::Range;
+
+#[macro_use] 
+extern crate lazy_static;
 
 extern crate regex;
 
@@ -14,9 +19,24 @@ extern crate csv;
 #[macro_use]
 extern crate error_chain;
 
+extern crate structopt;
+
+#[macro_use]
+extern crate duct;
+
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_json;
 
-extern crate structopt;
+extern crate linked_hash_map;
+
+#[macro_use]
+extern crate url;
+
+extern crate itertools;
+
+pub mod indexed_annotation;
 
 pub mod errors {
     error_chain!{

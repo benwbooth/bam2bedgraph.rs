@@ -46,5 +46,9 @@ path = "src/bam2bedgraph.rs"
 name = "intronrpkm"
 path = "src/intronrpkm.rs"
 
+[[bin]]
+name = "cassette_lengths"
+path = "src/cassette_lengths.rs"
+
 [profile.dev]
 opt-level = 2
