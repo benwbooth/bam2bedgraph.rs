@@ -52,13 +52,13 @@ fn run() -> Result<()> {
                             }
                         }
                     }
-                    let mut overlapping_exons_total = 0;
                     let mut overlapping_genes = Vec::<String>::new();
                     for (gene_name,overlapping_exons) in other_genes {
-                        overlapping_exons_total += overlapping_exons;
-                        overlapping_genes.push(gene_name.clone());
+                        if overlapping_exons == 0 {
+                            overlapping_genes.push(gene_name.clone());
+                        }
                     }
-                    if overlapping_exons_total == 0 {
+                    if !overlapping_genes.is_empty() {
                         println!("{}\t{}\t{}:{}..{}:{}\t{}", 
                             record_gene_name,
                             overlapping_genes.join(","),
