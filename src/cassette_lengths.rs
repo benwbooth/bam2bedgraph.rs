@@ -29,10 +29,10 @@ fn run() -> Result<()> {
         &options.annotfile_gff.r()?, 
         &None,
         &None)?;
-    println!("gene_name\tother_gene_name\tcassette_location\tcassette_length");
-    for (_, record) in annot.rows.iter().enumerate() {
+    println!("row\tgene_name\tother_gene_name\tcassette_location\tcassette_length");
+    for (row, record) in annot.rows.iter().enumerate() {
         if let Some(exon_type) = record.attributes.get("exon_type") {
-            if exon_type == "cassette" {
+            if exon_type == "cassette" && record.feature_type == "exon" {
                 if let Some(record_gene_name) = record.attributes.get("gene_name") {
                     let mut other_genes = HashMap::<String,u64>::new();
                     for overlap_row in annot.tree[&record.seqname].find(record.start-1..record.end) {
@@ -61,7 +61,8 @@ fn run() -> Result<()> {
                         }
                     }
                     if !overlapping_genes.is_empty() {
-                        println!("{}\t{}\t{}:{}..{}:{}\t{}", 
+                        println!("{}\t{}\t{}\t{}:{}..{}:{}\t{}", 
+                            row,
                             record_gene_name,
                             overlapping_genes.join(","),
                             record.seqname,
