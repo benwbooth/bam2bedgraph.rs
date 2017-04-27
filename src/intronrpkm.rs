@@ -170,7 +170,7 @@ impl std::fmt::Debug for ConstituitivePair {
     }    
 }
 
-fn find_constituitive_exons(annot: &IndexedAnnotation,
+fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                             options: &Options)
                             -> Result<Vec<ConstituitivePair>> {
     let gene_types: HashSet<_> = options.gene_type.iter().map(|t| String::from(t.as_ref())).collect();
@@ -202,7 +202,7 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                         if let Some(exon_rows) = annot.row2children.get(transcript_row) {
                             // first get exon start/stop -> transcript associations
                             // and splice start/stop -> transcript associations
-                            for (i, exon_row) in exon_rows.iter().enumerate() {
+                            for exon_row in exon_rows {
                                 let exon = &annot.rows[*exon_row];
                                 if exon_types.is_empty() || exon_types.contains(&exon.feature_type) {
                                     // skip any transcripts with weird exons
@@ -214,16 +214,25 @@ fn find_constituitive_exons(annot: &IndexedAnnotation,
                                     // record the transcript's exon starts/ends
                                     transcript2exon.entry(*transcript_row).or_insert_with(HashSet::new).
                                         insert(*exon_row);
-                                    // record the transcript's splice starts/ends
-                                    if i > 0 {
-                                        start2transcript.entry(exon.start-1).or_insert_with(HashSet::new).
-                                            insert(*transcript_row);
-                                    }
-                                    if i < exon_rows.len()-1 {
-                                        end2transcript.entry(exon.end).or_insert_with(HashSet::new).
-                                            insert(*transcript_row);
-                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+                // record each transcript's splice starts/ends
+                for transcript_row in &transcript_rows {
+                    if let Some(exon_rows) = transcript2exon.get(&transcript_row) {
+                        let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
+                        exon_rows.sort_by_key(|a| &annot.rows[**a].start);
+                        for (i, exon_row) in exon_rows.iter().enumerate() {
+                            let exon = &annot.rows[**exon_row];
+                            if i > 0 {
+                                start2transcript.entry(exon.start-1).or_insert_with(HashSet::new).
+                                    insert(*transcript_row);
+                            }
+                            if i < exon_rows.len()-1 {
+                                end2transcript.entry(exon.end).or_insert_with(HashSet::new).
+                                    insert(*transcript_row);
                             }
                         }
                     }
@@ -1613,7 +1622,7 @@ fn run() -> Result<()> {
     
     // find the constituitive exons
     writeln!(stderr(), "Searching for constituitive exons in the annotation")?;
-    let exonpairs = find_constituitive_exons(&annot, &options)?;
+    let exonpairs = find_constituitive_splice_pairs(&annot, &options)?;
     
     let annot = Arc::new(annot);
     if let Some(ref debug_exon_bigbed) = options.debug_exon_bigbed {
