@@ -6,7 +6,6 @@ use std::str;
 use std::vec::Vec;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -143,6 +142,8 @@ struct Options {
     debug_trackdb: Option<String>,
     #[structopt(long="debug_outannot_bigbed", help = "Write the output annotation as a bigBed file", name="DEBUG_OUTANNOT_BIGBED_FILE")]
     debug_outannot_bigbed: Option<String>,
+    #[structopt(long="debug_retained_introns", help = "Write the retained introns to a file", name="DEBUG_RETAINED_INTRONS")]
+    debug_retained_introns: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -864,7 +865,7 @@ fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
 
 #[derive(Serialize)]
 struct RpkmStats {
-    gene_row: usize,
+    pair_name: String,
     intron_rpkm: f64,
     max_cassette_rpkm: f64,
     total_constituitive_rpkm: f64,
@@ -878,107 +879,85 @@ fn compute_rpkm(
     total_reads: u64) 
     -> Result<RpkmStats>
 {
-    let mut transcript_parents = HashSet::<usize>::new();
-    if let Some(parents) = annot.row2parents.get(&pair.exon1_row) {
-        for parent in parents {
-            transcript_parents.insert(*parent);
-        }
-    }
-    if let Some(parents) = annot.row2parents.get(&pair.exon2_row) {
-        for parent in parents {
-            transcript_parents.insert(*parent);
-        }
-    }
-    let mut gene_parents = BTreeSet::<usize>::new();
-    for transcript_parent in &transcript_parents {
-        if let Some(parents) = annot.row2parents.get(transcript_parent) {
-            for parent in parents {
-                gene_parents.insert(*parent);
-            }
-        }
-    }
     // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
-    for gene_row in &gene_parents {
-        let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
-        let mut constituitive_reads = HashSet::<String>::new();
-        for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
-            constituitive_reads.insert(read.data().clone());
+    let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
+    let mut constituitive_reads = HashSet::<String>::new();
+    for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
+        constituitive_reads.insert(read.data().clone());
+    }
+    for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
+        constituitive_reads.insert(read.data().clone());
+    }
+    let total_constituitive_rpkm = if total_reads == 0 || constituitive_bases == 0 { 0f64 } 
+    else {
+        (1e10f64 * constituitive_reads.len() as f64) 
+            / (total_reads as f64 * constituitive_bases as f64)
+    };
+    
+    let mut cassette_reads = HashMap::<String,Vec<Range<u64>>>::new();
+    let mut cassette_features = Vec::<(Range<u64>,f64)>::new();
+    let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
+    let mut intron_features = Vec::<Range<u64>>::new();
+    if pair.cassettes.is_empty() {
+        let intron_range = annot.rows[pair.exon1_row].end..(annot.rows[pair.exon2_row].start-1);
+        for read in mapped_reads.find(&intron_range) {
+            let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+            intron_read.push(read.interval().start..read.interval().end);
         }
-        for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
-            constituitive_reads.insert(read.data().clone());
+        intron_features.push(intron_range);
+    }
+    else {
+        let intron_range = annot.rows[pair.exon1_row].end..pair.cassettes[0].range.start;
+        for read in mapped_reads.find(&intron_range) {
+            let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+            intron_read.push(read.interval().start..read.interval().end);
         }
-        let total_constituitive_rpkm = if total_reads == 0 || constituitive_bases == 0 { 0f64 } 
-        else {
-            (1e10f64 * constituitive_reads.len() as f64) 
-                / (total_reads as f64 * constituitive_bases as f64)
-        };
+        intron_features.push(intron_range);
         
-        let mut cassette_reads = HashMap::<String,Vec<Range<u64>>>::new();
-        let mut cassette_features = Vec::<(Range<u64>,f64)>::new();
-        let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
-        let mut intron_features = Vec::<Range<u64>>::new();
-        if pair.cassettes.is_empty() {
-            let intron_range = annot.rows[pair.exon1_row].end..(annot.rows[pair.exon2_row].start-1);
-            for read in mapped_reads.find(&intron_range) {
-                let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
-                intron_read.push(read.interval().start..read.interval().end);
+        for (i, cassette) in pair.cassettes.iter().enumerate() {
+            let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
+            for read in &reads {
+                let mut cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                cassette_read.push(read.interval().start..read.interval().end);
             }
-            intron_features.push(intron_range);
-        }
-        else {
-            let intron_range = annot.rows[pair.exon1_row].end..pair.cassettes[0].range.start;
-            for read in mapped_reads.find(&intron_range) {
-                let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
-                intron_read.push(read.interval().start..read.interval().end);
-            }
-            intron_features.push(intron_range);
-            
-            for (i, cassette) in pair.cassettes.iter().enumerate() {
-                let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
-                for read in &reads {
-                    let mut cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
-                    cassette_read.push(read.interval().start..read.interval().end);
-                }
-                let exon_rpkm = (1e10f64 * reads.len() as f64) / 
-                                (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
-                cassette_features.push((cassette.range.clone(), exon_rpkm));
-                if i < pair.cassettes.len()-1 {
-                    let intron_range = cassette.range.end..pair.cassettes[i+1].range.start;
-                    for read in mapped_reads.find(&intron_range) {
-                        let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
-                        intron_read.push(read.interval().start..read.interval().end);
-                    }
-                    intron_features.push(intron_range);
-                }
-            }
-            
-            let intron_range = pair.cassettes[pair.cassettes.len()-1].range.start..annot.rows[pair.exon2_row].start;
-            for read in mapped_reads.find(&intron_range) {
+            let exon_rpkm = (1e10f64 * reads.len() as f64) / 
+                            (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
+            cassette_features.push((cassette.range.clone(), exon_rpkm));
+            if i < pair.cassettes.len()-1 {
+                let intron_range = cassette.range.end..pair.cassettes[i+1].range.start;
+                for read in mapped_reads.find(&intron_range) {
                     let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                     intron_read.push(read.interval().start..read.interval().end);
+                }
+                intron_features.push(intron_range);
             }
-            intron_features.push(intron_range);
         }
-        let cassette_bases = cassette_features.iter().map(|f| f.0.end-f.0.start).sum::<u64>();
-        let intron_bases = intron_features.iter().map(|f| f.end-f.start).sum::<u64>();
-        let max_exon_rpkm = cassette_features.iter().map(|f| f.1).fold(std::f64::NAN, f64::max);
-        let total_cassette_rpkm = (1e10f64 * cassette_reads.len() as f64) / (total_reads as f64 * cassette_bases as f64);
-        let intron_rpkm = (1e10f64 * intron_reads.len() as f64) / (total_reads as f64 * intron_bases as f64);
-        let rpkmstats = RpkmStats {
-            gene_row: *gene_row,
-            intron_rpkm: intron_rpkm,
-            max_cassette_rpkm: max_exon_rpkm,
-            total_constituitive_rpkm: total_constituitive_rpkm,
-            total_cassette_rpkm: total_cassette_rpkm,
-        };
-        return Ok(rpkmstats);
+        
+        let intron_range = pair.cassettes[pair.cassettes.len()-1].range.start..annot.rows[pair.exon2_row].start;
+        for read in mapped_reads.find(&intron_range) {
+                let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                intron_read.push(read.interval().start..read.interval().end);
+        }
+        intron_features.push(intron_range);
     }
-    Err(format!("Could not find gene parents for {:?}", pair).into())
+    let cassette_bases = cassette_features.iter().map(|f| f.0.end-f.0.start).sum::<u64>();
+    let intron_bases = intron_features.iter().map(|f| f.end-f.start).sum::<u64>();
+    let max_exon_rpkm = cassette_features.iter().map(|f| f.1).fold(std::f64::NAN, f64::max);
+    let total_cassette_rpkm = (1e10f64 * cassette_reads.len() as f64) / (total_reads as f64 * cassette_bases as f64);
+    let intron_rpkm = (1e10f64 * intron_reads.len() as f64) / (total_reads as f64 * intron_bases as f64);
+    let pair_name = get_pair_name(pair, &annot);
+    let rpkmstats = RpkmStats {
+        pair_name: pair_name,
+        intron_rpkm: intron_rpkm,
+        max_cassette_rpkm: max_exon_rpkm,
+        total_constituitive_rpkm: total_constituitive_rpkm,
+        total_cassette_rpkm: total_cassette_rpkm,
+    };
+    return Ok(rpkmstats);
 }
 
 fn write_rpkm_stats(
     outfile: &str, 
-    annot: &Arc<IndexedAnnotation>, 
     rpkmstats: &mut[RpkmStats]) 
     -> Result<()> 
 {
@@ -987,29 +966,12 @@ fn write_rpkm_stats(
         else { Box::new(File::create(outfile)?) });
         
     // sort by intron_rpkm / max_exon_rpkm, descending
-    let unknown = String::from("unknown");
     rpkmstats.sort_by(|a, b| 
         ((b.intron_rpkm/b.max_cassette_rpkm).is_finite()).
             cmp(&((a.intron_rpkm/a.max_cassette_rpkm).is_finite())).
         then_with(|| OrderedFloat(b.intron_rpkm/b.max_cassette_rpkm).
             cmp(&OrderedFloat(a.intron_rpkm/a.max_cassette_rpkm))).
-        then_with(|| {
-            let gene1 = &annot.rows[a.gene_row];
-            let gene_name1 = 
-                gene1.attributes.get("gene_name").or_else(||
-                gene1.attributes.get("Name").or_else(||
-                gene1.attributes.get("ID"))).unwrap_or(&unknown);
-            let pair_name1 = format!("{}:{}:{}..{}:{}", 
-                    gene_name1, gene1.seqname, gene1.start-1, gene1.end, gene1.strand);
-            let gene2 = &annot.rows[b.gene_row];
-            let gene_name2 = 
-                gene2.attributes.get("gene_name").or_else(||
-                gene2.attributes.get("Name").or_else(||
-                gene2.attributes.get("ID"))).unwrap_or(&unknown);
-            let pair_name2 = format!("{}:{}:{}..{}:{}", 
-                    gene_name2, gene2.seqname, gene2.start-1, gene2.end, gene2.strand);
-            pair_name1.cmp(&pair_name2)
-        }));
+        then_with(|| a.pair_name.cmp(&b.pair_name)));
         
     // write the header
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
@@ -1021,19 +983,11 @@ fn write_rpkm_stats(
         "total_cassette_rpkm",
     ))?;
     for rpkm in rpkmstats {
-        let gene = &annot.rows[rpkm.gene_row];
-        
-        let gene_name = 
-            gene.attributes.get("gene_name").or_else(||
-            gene.attributes.get("Name").or_else(||
-            gene.attributes.get("ID"))).unwrap_or(&unknown);
-        let pair_name = format!("{}:{}:{}..{}:{}", 
-                gene_name, gene.seqname, gene.start-1, gene.end, gene.strand);
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         if !ratio.is_finite() { continue }
         
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
-            pair_name, 
+            rpkm.pair_name, 
             ratio,
             rpkm.intron_rpkm, 
             rpkm.max_cassette_rpkm, 
@@ -1095,7 +1049,7 @@ fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String 
 
 fn write_exon_bigbed(
     pairs: &[ConstituitivePair], 
-    annot: Arc<IndexedAnnotation>,
+    annot: &IndexedAnnotation,
     file: &str, 
     trackdb: &mut BufWriter<Box<Write>>) 
     -> Result<()> 
@@ -1147,6 +1101,29 @@ fn write_exon_bigbed(
         map(|(k,v)| (annot.vizchrmap.get(k).unwrap_or(k).clone(), *v)).
         collect::<LinkedHashMap<String,u64>>();
     bed2bigbed(&bed_file,file,&vizrefs,true,true,trackdb)?;
+    Ok(())
+}
+
+fn write_retained_introns(
+    pairs: &[ConstituitivePair], 
+    annot: &IndexedAnnotation,
+    file: &str)
+    -> Result<()> 
+{
+    let mut bw = BufWriter::new(File::create(&file)?);
+    for pair in pairs {
+        if pair.is_retained_intron {
+            let pair_name = get_pair_name(pair, annot);
+            let line = &[
+                &pair_name,
+                &annot.rows[pair.exon1_row].seqname,
+                &annot.rows[pair.exon1_row].end.to_string(),
+                &(annot.rows[pair.exon2_row].start-1).to_string(),
+                &annot.rows[pair.exon1_row].strand,
+            ].iter().join("\t");
+            writeln!(bw, "{}", line)?;
+        }
+    }
     Ok(())
 }
 
@@ -1574,6 +1551,7 @@ fn run() -> Result<()> {
         if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(format!("{}.rpkmstats.json", options.debug_prefix)) }
         if options.debug_trackdb.is_none() { options.debug_trackdb = Some(format!("{}.trackDb.txt", options.debug_prefix)) }
         if options.debug_outannot_bigbed.is_none() { options.debug_outannot_bigbed = Some(format!("{}.outannot.bb", options.debug_prefix)) }
+        if options.debug_retained_introns.is_none() { options.debug_retained_introns = Some(format!("{}.retained_introns.txt", options.debug_prefix)) }
     }
     
     // set up the trackdb writer
@@ -1658,7 +1636,7 @@ fn run() -> Result<()> {
     let annot = Arc::new(annot);
     if let Some(ref debug_exon_bigbed) = options.debug_exon_bigbed {
         writeln!(stderr(), "Writing constituitive pairs to a bigbed file")?;
-        write_exon_bigbed(&exonpairs, annot.clone(), &debug_exon_bigbed, &mut trackdb)?;
+        write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &mut trackdb)?;
     }
         
     writeln!(stderr(), "Reannotating cassette regions")?;
@@ -1672,7 +1650,11 @@ fn run() -> Result<()> {
         &mut trackdb)?;
     if let Some(ref debug_reannot_bigbed) = options.debug_reannot_bigbed {
         writeln!(stderr(), "Writing reannotation to bigbed")?;
-        write_exon_bigbed(&reannotated_pairs, annot.clone(), &debug_reannot_bigbed, &mut trackdb)?;
+        write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &mut trackdb)?;
+    }
+    if let Some(ref debug_retained_introns) = options.debug_retained_introns {
+        writeln!(stderr(), "Writing retained introns to file")?;
+        write_retained_introns(&reannotated_pairs, &annot, &debug_retained_introns)?;
     }
     
     writeln!(stderr(), "Computing RPKM stats")?;
@@ -1684,7 +1666,7 @@ fn run() -> Result<()> {
             serde_json::to_writer_pretty(&mut output, &rpkmstats)?;
     }
     writeln!(stderr(), "Writing RPKM stats to {:?}", &options.outfile)?;
-    write_rpkm_stats(&options.outfile, &annot, &mut rpkmstats)?;
+    write_rpkm_stats(&options.outfile, &mut rpkmstats)?;
     
     if let Some(ref outannot) = options.outannot {
         writeln!(stderr(), "Writing output annotation file")?;
