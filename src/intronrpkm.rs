@@ -162,11 +162,12 @@ struct ConstituitivePair {
     exon2_row: usize,
     // start..end, optional cassette_row
     cassettes: Vec<Cassette>,
+    is_retained_intron: bool,
 }
 impl std::fmt::Debug for ConstituitivePair {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "exon1_row: {}, exon2_row: {}, cassettes: {:?}", 
-            self.exon1_row, self.exon2_row, self.cassettes)
+        write!(f, "exon1_row: {}, exon2_row: {}, cassettes: {:?}, is_retained_intron: {}", 
+            self.exon1_row, self.exon2_row, self.cassettes, self.is_retained_intron)
     }    
 }
 
@@ -289,6 +290,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                                 exon1_row: exon_row.0,
                                 exon2_row: exon_row.1,
                                 cassettes: Vec::new(),
+                                is_retained_intron: false,
                             });
                         }
                     }
@@ -423,7 +425,18 @@ fn reannotate_pair(
     let mut histo = vec![0i32; region_size];
     let mut mapped_reads = IntervalTree::<u64, String>::new();
     let mut cassettes = Vec::<Cassette>::new();
+    let mut read_coverage = vec![0i32; region_size];
     for (&(_,ref read_name),read_pair) in read_pairs {
+        // fill in the read_coverage histogram
+        for exons in read_pair {
+            for exon in exons {
+                if start < (exon.end as usize) && (exon.start as usize) < end {
+                    for pos in std::cmp::max(start as u64, exon.start)..std::cmp::min(end as u64, exon.end) {
+                        read_coverage[pos as usize - start] += 1;
+                    }
+                }
+            }
+        }
         // at least one of the read pairs must match a constituitive splice junction
         let mut matches_splice = false;
         for exons in read_pair {
@@ -539,10 +552,27 @@ fn reannotate_pair(
             });
         }
     }
+    let mut cassette_coverage = vec![0i32; region_size];
+    for cassette in &cassettes {
+        for pos in cassette.range.start..cassette.range.end {
+            cassette_coverage[pos as usize-start] += 1;
+        }
+    }
+    let mut total_bases = 0u64;
+    let mut covered_bases = 0u64;
+    for (i, read_ct) in read_coverage.iter().enumerate() {
+        if cassette_coverage[i] == 0 {
+            total_bases += 1;
+            if *read_ct > 0 { covered_bases += 1 }
+        }
+    }
+    let base_coverage = covered_bases as f64 / total_bases as f64;
+    let is_retained_intron = base_coverage >= 0.9;
     let reannotpair = ConstituitivePair {
         exon1_row: exon1.row,
         exon2_row: exon2.row,
         cassettes: cassettes,
+        is_retained_intron: is_retained_intron,
     };
     //writeln!(stderr(), "Writing reannotated pair: {:?}", reannotpair)?;
     Ok((reannotpair, mapped_reads))
@@ -1050,7 +1080,7 @@ fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String 
         annot.rows[pair.exon1_row].attributes.get("Name").or_else(|| 
         annot.rows[pair.exon1_row].attributes.get("ID")))))));
     // format the feature name    
-    let name = format!("{}{}:{}..{}:{}", 
+    let name = format!("{}{}:{}..{}:{}{}", 
         match gene_id {
             Some(g) => format!("{}:", g),
             None => "".to_string(),
@@ -1058,7 +1088,8 @@ fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String 
         annot.rows[pair.exon1_row].seqname,
         annot.rows[pair.exon1_row].start-1,
         annot.rows[pair.exon2_row].end,
-        annot.rows[pair.exon2_row].strand);
+        annot.rows[pair.exon2_row].strand,
+        if pair.is_retained_intron {".retained_intron"} else {""});
     name
 }
 
