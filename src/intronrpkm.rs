@@ -1,6 +1,4 @@
 #![recursion_limit="128"]
-#![feature(plugin)]
-#![plugin(indoc)]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
 use std::str;
 use std::vec::Vec;
@@ -71,6 +69,9 @@ use ordered_float::OrderedFloat;
 #[macro_use]
 extern crate duct;
 
+extern crate unindent;
+use unindent::unindent;
+
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
 struct Options {
@@ -126,8 +127,6 @@ struct Options {
     debug_annot_gtf: Option<String>,
     #[structopt(long="debug_annot_bigbed", help = "Write the input annotation as a bigBed file", name="DEBUG_ANNOT_BIGBED_FILE")]
     debug_annot_bigbed: Option<String>,
-    #[structopt(long="debug_annot_json", help = "Dump the indexed annotation as a debug test", name="DEBUG_ANNOT_JSON")]
-    debug_annot_json: Option<String>,
     #[structopt(long="debug_exon_bigbed", help = "Output the constituitive pairs to a bigbed file", name="DEBUG_EXON_BIGBED")]
     debug_exon_bigbed: Option<String>,
     #[structopt(long="debug_bigwig", help = "Output the reannotation splice start/end sites as bigwig files", name="DEBUG_BIGWIG_FILE_PREFIX")]
@@ -348,7 +347,7 @@ fn bed2bigbed(
     let url = utf8_percent_encode(bigbed_file, PATH_ENCODE_SET);
     let track_name = Path::new(bigbed_file).file_stem().r()?.to_str().r()?;
     // write to the trackDb.txt file
-    trackdb.write_fmt(format_args!(indoc!(r##"
+    trackdb.write_fmt(format_args!("{}", unindent(&format!(r##"
     
         track {}
         type bigBed 12
@@ -357,7 +356,7 @@ fn bed2bigbed(
         longLabel {}
         itemRgb On
         visibility hide
-    "##), track_name, url, track_name, track_name))?;
+    "##, track_name, url, track_name, track_name))))?;
     trackdb.flush()?;
         
     Ok(())
@@ -819,7 +818,7 @@ fn write_bigwig(
     // write to the trackDb.txt file
     if write_parent {
         let viewlimits = if strand == "-" { "-50:0" } else { "0:50" };
-        trackdb.write_fmt(format_args!(indoc!(r##"
+        trackdb.write_fmt(format_args!("{}", unindent(&format!(r##"
 
             track {}
             shortLabel {}
@@ -831,7 +830,7 @@ fn write_bigwig(
             maxHeightPixels: 100:50:8
             viewLimits {}
             priority 1
-            "##), parent, parent, parent, viewlimits))?;
+            "##, parent, parent, parent, viewlimits))))?;
         trackdb.flush()?;
     }
     trackdb.write_fmt(format_args!(r##"
@@ -1543,7 +1542,6 @@ fn run() -> Result<()> {
         if options.debug_annot_gff.is_none() { options.debug_annot_gff = Some(format!("{}.annot.gff", options.debug_prefix)) }
         // if options.debug_annot_gtf.is_none() { options.debug_annot_gtf = Some(format!("{}.annot.gtf", options.debug_prefix)) }
         if options.debug_annot_bigbed.is_none() { options.debug_annot_bigbed = Some(format!("{}.annot.bb", options.debug_prefix)) }
-        // if options.debug_annot_json.is_none() { options.debug_annot_json = Some(format!("{}.annot.json", options.debug_prefix)) }
         if options.debug_exon_bigbed.is_none() { options.debug_exon_bigbed = Some(format!("{}.exon.bb", options.debug_prefix)) }
         if options.debug_bigwig.is_none() { options.debug_bigwig = Some(format!("{}.intronrpkm", options.debug_prefix)) }
         if options.debug_reannot_bigbed.is_none() { options.debug_reannot_bigbed = Some(format!("{}.reannot.bb", options.debug_prefix)) }
@@ -1618,10 +1616,6 @@ fn run() -> Result<()> {
             &options.transcript_type,
             &options.gene_type,
             &mut trackdb)?; 
-    }
-    if let Some(ref debug_annot_json) = options.debug_annot_json {
-        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_json)?;
-        annot.to_json(&debug_annot_json)?; 
     }
     
     // get the total bam reads

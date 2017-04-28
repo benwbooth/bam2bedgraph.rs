@@ -8,9 +8,6 @@ use regex::Captures;
 use url::percent_encoding::{percent_decode, utf8_percent_encode, SIMPLE_ENCODE_SET};
 use bio::data_structures::interval_tree::IntervalTree;
 use bio::utils::Interval;
-use serde::ser::SerializeStruct;
-use serde;
-use serde_json;
 use std;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
@@ -19,8 +16,9 @@ use std::ops::Range;
 use std::path::Path;
 use ::errors::*;
 use itertools::Itertools;
+use unindent::unindent;
 
-#[derive(Default, Serialize, Deserialize,Clone)]
+#[derive(Default, Clone)]
 pub struct Record {
     pub row: usize,
     pub seqname: String,
@@ -144,31 +142,7 @@ pub struct IndexedAnnotation {
     pub vizchrmap: HashMap<String, String>,
     pub refs: LinkedHashMap<String, u64>,
 }
-impl serde::Serialize for IndexedAnnotation
-{
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-        where S: serde::Serializer
-    {
-        let mut ia = serializer.serialize_struct("IndexedAnnotation", 5)?;
-        ia.serialize_field("rows", &self.rows)?;
-        ia.serialize_field("id2row", &self.id2row)?;
-        ia.serialize_field("row2parents", &self.row2parents)?;
-        ia.serialize_field("row2children", &self.row2children)?;
-        let mut tree = HashMap::<String, Vec<((u64,u64),usize)>>::new();
-        for (chr,interval_tree) in &self.tree {
-            let mut nodes = Vec::<((u64, u64),usize)>::new();
-            for node in interval_tree.find(0..std::u64::MAX) {
-                nodes.push(((node.interval().start,node.interval().end), *node.data()));
-            }
-            tree.insert(chr.clone(), nodes);
-        }
-        ia.serialize_field("tree", &tree)?;
-        ia.serialize_field("chrmap", &self.chrmap)?;
-        ia.serialize_field("vizchrmap", &self.chrmap)?;
-        ia.serialize_field("refs", &self.refs)?;
-        ia.end()
-    }
-}
+
 impl IndexedAnnotation {
     pub fn from_gtf(
         annotfile: &str, 
@@ -525,15 +499,6 @@ impl IndexedAnnotation {
         Ok(())
     }
     
-    pub fn to_json(&self, json_file: &str) -> Result<()> {
-        let mut output: BufWriter<Box<Write>> = BufWriter::new(
-            if json_file == "-" { Box::new(stdout()) } 
-            else { Box::new(File::create(json_file)?) });
-        
-        serde_json::to_writer_pretty(&mut output, &self)?;
-        Ok(())
-    }
-    
     pub fn to_bed(&self, 
         bed_file: &str, 
         exon_types: &[String],
@@ -707,7 +672,7 @@ impl IndexedAnnotation {
         let url = utf8_percent_encode(file, PATH_ENCODE_SET);
         let track_name = Path::new(file).file_stem().r()?.to_str().r()?;
         // write to the trackDb.txt file
-        trackdb.write_fmt(format_args!(indoc!(r##"
+        trackdb.write_fmt(format_args!("{}", unindent(&format!(r##"
         
             track {}
             type bigBed 12
@@ -716,7 +681,7 @@ impl IndexedAnnotation {
             longLabel {}
             itemRgb On
             visibility hide
-        "##), track_name, url, track_name, track_name))?;
+        "##, track_name, url, track_name, track_name))))?;
         trackdb.flush()?;
         
         Ok(())

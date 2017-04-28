@@ -1,6 +1,4 @@
 #![recursion_limit = "1024"]
-#![feature(plugin)]
-#![plugin(indoc)]
 use std::vec::Vec;
 use std::ops::Range;
 
@@ -25,7 +23,6 @@ extern crate structopt;
 extern crate duct;
 
 extern crate serde;
-#[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
 
@@ -35,6 +32,8 @@ extern crate linked_hash_map;
 extern crate url;
 
 extern crate itertools;
+
+extern crate unindent;
 
 pub mod indexed_annotation;
 

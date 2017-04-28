@@ -15,8 +15,7 @@ url = "*"
 lazy_static = "*"
 serde_derive = "*"
 serde_json = "*"
-indoc = "*"
-concurrent-hashmap = "*"
+unindent = "*"
 futures = "*"
 futures-cpupool = "*"
 num_cpus = "*"
@@ -33,6 +32,10 @@ features = ["std"]
 [dependencies.linked-hash-map]
 version = "*"
 features = ["serde_impl"]
+
+[dependencies.concurrent-hashmap]
+version = "*"
+default-features = false
 
 [lib]
 name = "bam2bedgraph"
