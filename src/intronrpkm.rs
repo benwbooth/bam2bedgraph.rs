@@ -188,6 +188,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                 let mut transcript2exon = HashMap::<usize,HashSet<usize>>::new();
                 let mut start2transcript = HashMap::<u64,HashSet<usize>>::new();
                 let mut end2transcript = HashMap::<u64,HashSet<usize>>::new();
+                let mut transcript_tree = IntervalTree::<u64, usize>::new();
                 // splice start..splice end -> vec![(transcript_row, exon1_row, exon2_row, Some(cassette_row)]
                 let mut splices = HashMap::<Range<u64>,Vec<(usize,usize,usize,Option<usize>)>>::new();
                 'transcript_row:
@@ -211,8 +212,12 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                                         continue 'transcript_row;
                                     }
                                     // make sure the transcript has at least 1 exon
-                                    transcript_rows.insert(*transcript_row);
-                                    // record the transcript's exon starts/ends
+                                    if transcript_rows.contains(transcript_row) {
+                                        transcript_rows.insert(*transcript_row);
+                                        transcript_tree.insert(
+                                            Interval::new(transcript.start-1..transcript.end)?, 
+                                            *transcript_row);
+                                    }
                                     transcript2exon.entry(*transcript_row).or_insert_with(HashSet::new).
                                         insert(*exon_row);
                                 }
@@ -244,11 +249,17 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         exon_rows.sort_by_key(|a| &annot.rows[**a].start);
                         for (i, exon_row) in exon_rows.iter().enumerate() {
                             let exon = &annot.rows[**exon_row];
-                            if i < exon_rows.len()-1 && end2transcript[&exon.end].len() == transcript_rows.len() {
+                            if i < exon_rows.len()-1  {
                                 // two adjacent constitutive exons
                                 let adjacent_row = exon_rows[i+1];
                                 let adjacent_exon = &annot.rows[*adjacent_row];
-                                if start2transcript[&(adjacent_exon.start-1)].len() == transcript_rows.len() {
+                                let containing_trs = transcript_tree.
+                                    find(exon.end..adjacent_exon.start-1).
+                                    filter(|t| annot.rows[*t.data()].start-1 < exon.end && 
+                                        adjacent_exon.start-1 < annot.rows[*t.data()].end).collect::<Vec<_>>();
+                                if end2transcript[&exon.end].len() == containing_trs.len()
+                                   && start2transcript[&(adjacent_exon.start-1)].len() == containing_trs.len() 
+                                {
                                     splices.entry(exon.end..(adjacent_exon.start-1)).
                                         or_insert_with(Vec::new).
                                         push((*transcript_row, **exon_row, *adjacent_row, None));
@@ -257,8 +268,12 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                                 else if i < exon_rows.len()-2 {
                                     let next_row = exon_rows[i+2];
                                     let next_exon = &annot.rows[*next_row];
-                                    if end2transcript[&(adjacent_exon.end)].len() != transcript_rows.len() &&
-                                        start2transcript[&(next_exon.start-1)].len() == transcript_rows.len() 
+                                    let containing_trs = transcript_tree.
+                                        find(exon.end..next_exon.start-1).
+                                        filter(|t| annot.rows[*t.data()].start-1 < exon.end && 
+                                            next_exon.start-1 < annot.rows[*t.data()].end).collect::<Vec<_>>();
+                                    if end2transcript[&(adjacent_exon.end)].len() < containing_trs.len() &&
+                                        start2transcript[&(next_exon.start-1)].len() == containing_trs.len() 
                                     {
                                         splices.entry(exon.end..(next_exon.start-1)).
                                             or_insert_with(Vec::new).
@@ -269,9 +284,13 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         }
                     }
                 }
-                for (_, splices) in splices {
+                for (splice_range, splices) in splices {
+                    let containing_trs = transcript_tree.
+                        find(&splice_range).
+                        filter(|t| annot.rows[*t.data()].start-1 < splice_range.start && 
+                            splice_range.end < annot.rows[*t.data()].end).collect::<Vec<_>>();
                     // look at constituitive splices
-                    if splices.len() == transcript_rows.len() {
+                    if splices.len() == containing_trs.len() {
                         let mut exon_rows = HashSet::<(usize,usize)>::new();
                         for (_, exon1_row, exon2_row, _) in splices {
                             exon_rows.insert((exon1_row, exon2_row));
@@ -280,9 +299,9 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
                         exon_rows.sort_by(|a,b| 
                             ((&annot.rows[a.0].end-&annot.rows[a.0].start+1) + (&annot.rows[a.1].end-&annot.rows[a.1].start+1)).
-                            cmp(&((&annot.rows[b.0].end-&annot.rows[b.0].start+1) + (&annot.rows[b.1].end-&annot.rows[b.1].start+1)))
+                            cmp(&((&annot.rows[b.0].end-&annot.rows[b.0].start+1) + (&annot.rows[b.1].end-&annot.rows[b.1].start+1))).
                             // then sort by lowest exon1_row 
-                            .then_with(|| a.0.cmp(&b.0)).
+                            then_with(|| a.0.cmp(&b.0)).
                             // then sort by lowest exon2_row
                             then_with(|| a.1.cmp(&b.1)));
                         if let Some(exon_row) = exon_rows.get(0) {
