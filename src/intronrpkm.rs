@@ -212,7 +212,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                                         continue 'transcript_row;
                                     }
                                     // make sure the transcript has at least 1 exon
-                                    if transcript_rows.contains(transcript_row) {
+                                    if !transcript_rows.contains(transcript_row) {
                                         transcript_rows.insert(*transcript_row);
                                         transcript_tree.insert(
                                             Interval::new(transcript.start-1..transcript.end)?, 
