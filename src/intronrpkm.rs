@@ -15,6 +15,7 @@ use std::sync::Arc;
 extern crate bam2bedgraph;
 use bam2bedgraph::errors::*;
 use bam2bedgraph::cigar2exons;
+use bam2bedgraph::power_set::PowerSet;
 use bam2bedgraph::indexed_annotation::IndexedAnnotation;
 use bam2bedgraph::indexed_annotation::Record;
 
@@ -110,9 +111,6 @@ struct Options {
     // flags
     #[structopt(long="max_iterations", help = "How many start/stop combinations before we skip this one?", name="MAX_ITERATIONS", default_value="200")]
     max_iterations: usize,
-    #[structopt(long="fill_incomplete_exons", help = "Should we try to fill in exons which do not have two splice junctions?")]
-    fill_incomplete_exons: bool,
-    
     #[structopt(long="cpu_threads", short="t", help = "How many threads to use for processing", default_value="0")]
     cpu_threads: usize,
     
@@ -433,7 +431,6 @@ fn reannotate_pair(
     exon2: &Record,
     read_pairs: &HashMap<(String,String),Vec<Vec<Range<u64>>>>,
     debug_bigwig: &Option<String>,
-    fill_incomplete_exons: bool,
     max_iterations: usize,
     bw_histogram: Arc<ConcHashMap<usize,i32>>,
     start_bw_histogram: Arc<ConcHashMap<usize,i32>>,
@@ -544,21 +541,13 @@ fn reannotate_pair(
                 ends.push((i+exon_region.start,*value));
             }
         }
+        // get the set of possible starts/stops
+        let mut pairs = HashMap::<Range<usize>,(i32,i32)>::new();
         let mut iterations = 0;
-        let mut start_score = 0;
-        let mut end_score = 0;
-        let mut best_start = exon_region.start;
-        let mut best_end = exon_region.end;
         for &(s, sscore) in &starts {
             for &(e, escore) in &ends {
-                if s < e && 
-                    (start_score+end_score < sscore+escore 
-                        || (start_score+end_score == sscore+escore && best_end-best_start < e-s)) 
-                {
-                    start_score = sscore;
-                    end_score = escore;
-                    best_start = s;
-                    best_end = e;
+                if s < e {
+                    pairs.insert(s..e, (sscore, escore));
                 }
                 iterations += 1;
                 if iterations > max_iterations {
@@ -567,12 +556,42 @@ fn reannotate_pair(
                 }
             }
         }
+        // iterate over the powerset of the start/stop set
+        let mut best_set_score = 0;
+        let mut best_set = None;
+        let mut iterations = 0;
+        'SET:
+        for set in PowerSet::new(&pairs.keys().collect::<Vec<_>>()) {
+            let mut set_score = 0;
+            let mut overlaps = IntervalTree::<usize,()>::new();
+            for pair in &set {
+                // make sure there are no overlaps in this set
+                let pair_interval = Interval::new(pair.start..pair.end)?;
+                for _ in overlaps.find(pair_interval.clone()) { continue 'SET; }
+                overlaps.insert(pair_interval, ());
+                // add to the set score
+                let (sscore, escore) = pairs[pair];
+                set_score += sscore + escore;
+                // make sure we don't go over the max iterations
+                iterations += 1;
+                if iterations > max_iterations {
+                    writeln!(stderr(), "More than {} iterations on pair {}", max_iterations, pair_name)?;
+                    continue 'EXON_REGION;
+                }
+            }
+            if best_set.is_none() || set_score > best_set_score {
+                best_set = Some(set);
+                best_set_score = set_score;
+            }
+        }
         // store the reannotated cassette exon
-        if fill_incomplete_exons || (start_score > 0  && end_score > 0) {
-            cassettes.push(Cassette {
-                range: best_start as u64..best_end as u64,
-                cassette_row: None,
-            });
+        if let Some(best_set) = best_set {
+            for pair in best_set {
+                cassettes.push(Cassette {
+                    range: pair.start as u64..pair.end as u64,
+                    cassette_row: None,
+                });
+            }
         }
     }
     let mut cassette_coverage = vec![0i32; region_size];
@@ -687,7 +706,6 @@ fn reannotate_regions(
         let exon1 = exon1.clone();
         let exon2 = exon2.clone();
         let debug_bigwig = options.debug_bigwig.clone().map(String::from);
-        let fill_incomplete_exons = options.fill_incomplete_exons;
         let max_iterations = options.max_iterations;
         let bamfiles = Arc::new(bamfiles.to_vec());
         let bamstrand = Arc::new(bamstrand.to_vec());
@@ -724,7 +742,6 @@ fn reannotate_regions(
                 &exon2,
                 &read_pairs,
                 &debug_bigwig,
-                fill_incomplete_exons,
                 max_iterations,
                 bw_histogram,
                 start_bw_histogram,

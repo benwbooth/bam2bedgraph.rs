@@ -73,6 +73,34 @@ pub mod errors {
 
 use errors::*;
 
+pub mod power_set {
+    pub struct PowerSet<'a, T: 'a> {
+        source: &'a [T],
+        position: usize
+    }
+    
+    impl<'a, T> PowerSet<'a, T> where T: Clone {
+        pub fn new(source: &'a [T]) -> PowerSet<'a, T> {
+            PowerSet { source: source, position: 0 }
+        }
+    }
+
+    impl<'a, T> Iterator for PowerSet<'a, T> where T: Clone {
+        type Item = Vec<T>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if 2usize.pow(self.source.len() as u32) <= self.position {
+                None
+            } else {
+                let res = self.source.iter().enumerate().filter(|&(i, _)| (self.position >> i) % 2 == 1)
+                                                        .map(|(_, element)| element.clone()).collect();
+                self.position = self.position + 1;
+                Some(res)
+            }
+        }
+    }
+}
+
 pub fn cigar2exons(cigar: &[Cigar], pos: u64) -> Result<Vec<Range<u64>>> {
     let mut exons = Vec::<Range<u64>>::new();
     let mut pos = pos;
