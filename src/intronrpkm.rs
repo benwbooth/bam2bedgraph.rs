@@ -556,6 +556,10 @@ fn reannotate_pair(
                 }
             }
         }
+        if pairs.len() >= 64 {
+            writeln!(stderr(), "Too many possible cassette start/stops for pair {}", pair_name)?;
+            continue 'EXON_REGION;
+        }
         // iterate over the powerset of the start/stop set
         let mut best_set_score = 0;
         let mut best_set = None;
