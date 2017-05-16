@@ -564,11 +564,12 @@ fn reannotate_pair(
         for set in PowerSet::new(&pairs.keys().collect::<Vec<_>>()) {
             let mut set_score = 0;
             let mut overlaps = IntervalTree::<usize,()>::new();
+            let mut set = set.clone();
+            set.sort_by_key(|a| a.start);
             for pair in &set {
                 // make sure there are no overlaps in this set
-                let pair_interval = Interval::new(pair.start..pair.end)?;
-                for _ in overlaps.find(pair_interval.clone()) { continue 'SET; }
-                overlaps.insert(pair_interval, ());
+                for _ in overlaps.find(pair.start..pair.end) { continue 'SET; }
+                overlaps.insert(Interval::new(pair.start..pair.end)?, ());
                 // add to the set score
                 let (sscore, escore) = pairs[pair];
                 set_score += sscore + escore;
