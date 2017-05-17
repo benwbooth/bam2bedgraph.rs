@@ -109,7 +109,7 @@ struct Options {
     cds_type: Vec<String>,
     
     // flags
-    #[structopt(long="max_iterations", help = "How many start/stop combinations before we skip this one?", name="MAX_ITERATIONS", default_value="200")]
+    #[structopt(long="max_iterations", help = "How many start/stop combinations before we skip this one?", name="MAX_ITERATIONS", default_value="1000000")]
     max_iterations: usize,
     #[structopt(long="cpu_threads", short="t", help = "How many threads to use for processing", default_value="0")]
     cpu_threads: usize,
