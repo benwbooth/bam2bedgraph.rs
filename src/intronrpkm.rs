@@ -547,7 +547,7 @@ fn reannotate_pair(
         for &(s, sscore) in &starts {
             for &(e, escore) in &ends {
                 if s < e {
-                    pairs.insert(s..e, (sscore, escore));
+                    pairs.insert(s..(e+1), (sscore, escore));
                 }
                 iterations += 1;
                 if iterations > max_iterations {
