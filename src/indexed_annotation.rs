@@ -796,7 +796,7 @@ impl IndexedAnnotation {
                                 lazy_static! {
                                     static ref FASTA_FORMAT: Regex = Regex::new(r".{1,72}").unwrap();
                                 }
-                                transcript_seq = FASTA_FORMAT.replace_all(&transcript_seq,"$&\n").into_owned();
+                                transcript_seq = FASTA_FORMAT.replace_all(&transcript_seq,"$0\n").into_owned();
                                 
                                 define_encode_set! {
                                     pub GFF_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'\t', '\r', '\n', ';', '%', '='}
