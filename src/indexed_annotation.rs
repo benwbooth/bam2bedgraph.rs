@@ -796,7 +796,7 @@ impl IndexedAnnotation {
                                 lazy_static! {
                                     static ref FASTA_FORMAT: Regex = Regex::new(r".{1,72}").unwrap();
                                 }
-                                transcript_seq = FASTA_FORMAT.replace_all(&transcript_seq,"\\&\n").into_owned();
+                                transcript_seq = FASTA_FORMAT.replace_all(&transcript_seq,"$&\n").into_owned();
                                 
                                 define_encode_set! {
                                     pub GFF_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'\t', '\r', '\n', ';', '%', '='}
@@ -805,7 +805,7 @@ impl IndexedAnnotation {
                                     format!("{}={}", 
                                         utf8_percent_encode(k, GFF_ENCODE_SET), 
                                         utf8_percent_encode(v, GFF_ENCODE_SET))).join("; ");
-                                writeln!(bw, ">{} {}\n{}", transcript_name, attrs, transcript_seq)?;
+                                write!(bw, ">{} {}\n{}", transcript_name, attrs, transcript_seq)?;
                             }
                         }
                     }
