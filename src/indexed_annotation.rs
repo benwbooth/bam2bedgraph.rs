@@ -739,7 +739,6 @@ impl IndexedAnnotation {
         let transcript_types = transcript_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
         let gene_types = gene_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
         
-        let mut transcript_names = HashSet::<String>::new();
         let mut bw = BufWriter::new(File::create(&fasta_file)?);
         let mut chrs = self.tree.keys().collect::<Vec<_>>();
         chrs.sort_by_key(|a| a.as_bytes());
@@ -786,24 +785,14 @@ impl IndexedAnnotation {
                                     transcript_seq = String::from_utf8(dna::revcomp(&seq))?;
                                 }
                                 
-                                let transcript_name = 
-                                    transcript.attributes.get("transcript_name").or_else(||
-                                    transcript.attributes.get("Name").or_else(||
-                                    transcript.attributes.get("ID")));
-                                let mut transcript_name = match transcript_name {
-                                    Some(t) => t.clone(),
-                                    None => String::from(format!("{}:{}..{}:{}", 
-                                        transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
-                                };
-                                while transcript_names.contains(&transcript_name) {
-                                    lazy_static! {
-                                        static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
-                                    }
-                                    transcript_name = String::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
-                                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                                let transcript_name: Option<String> = 
+                                    transcript.attributes.get("transcript_id").or_else(||
+                                    transcript.attributes.get("ID")).
+                                    map(|a| a.to_owned());
+                                if transcript_name.is_none() {
+                                    return Err(format!("Could not get ID for transcript at row {}", transcript_row).into());
                                 }
-                                transcript_names.insert(transcript_name.clone());
-                                
+                                let transcript_name = transcript_name.r()?;
                                 lazy_static! {
                                     static ref FASTA_FORMAT: Regex = Regex::new(r".{1,72}").unwrap();
                                 }
