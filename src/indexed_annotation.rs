@@ -8,6 +8,7 @@ use regex::Captures;
 use url::percent_encoding::{percent_decode, utf8_percent_encode, SIMPLE_ENCODE_SET};
 use bio::data_structures::interval_tree::IntervalTree;
 use bio::utils::Interval;
+use bio::alphabets::dna;
 use std;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, BufRead, Write};
@@ -684,6 +685,144 @@ impl IndexedAnnotation {
         "##, track_name, url, track_name, track_name))))?;
         trackdb.flush()?;
         
+        Ok(())
+    }
+    
+    pub fn read_fasta(fasta_file: &str) -> Result<LinkedHashMap<String,(String,String)>> {
+        let mut fasta = LinkedHashMap::<String,(String,String)>::new();
+        lazy_static! {
+            static ref HEADER: Regex = Regex::new(r"^>(\S*)([^\n]*)").unwrap();
+        }
+        let f = File::open(&fasta_file)?;
+        let file = BufReader::new(&f);
+        let mut header: Option<String> = None;
+        let mut attrs: Option<String> = None;
+        let mut sequence: Option<String> = None;
+        for line in file.lines() {
+            let line = line?;
+            if let Some(cap) = HEADER.captures(&line) {
+                if let Some(header) = header {
+                    if let Some(attrs) = attrs {
+                        if let Some(sequence) = sequence {
+                            fasta.insert(header.clone(), (attrs.clone(), sequence.clone()));
+                        }
+                    }
+                }
+                header = Some(cap[1].to_string());
+                attrs = Some(cap[2].to_string());
+                sequence = Some(String::new());
+            }
+            else if let Some(ref mut sequence) = sequence {
+                sequence.push_str(line.trim());
+            }
+        }
+        if let Some(header) = header {
+            if let Some(attrs) = attrs {
+                if let Some(sequence) = sequence {
+                    fasta.insert(header, (attrs, sequence));
+                }
+            }
+        }
+        Ok(fasta)
+    }
+    
+    pub fn to_fasta(&self, 
+        fasta_file: &str, 
+        genome_file: &str,
+        exon_types: &[String],
+        transcript_types: &[String],
+        gene_types: &[String])
+        -> Result<()> 
+    {
+        let genome = IndexedAnnotation::read_fasta(genome_file)?;
+        let exon_types = exon_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
+        let transcript_types = transcript_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
+        let gene_types = gene_types.iter().map(|t| String::from(t.as_ref())).collect::<HashSet<String>>();
+        
+        let mut transcript_names = HashSet::<String>::new();
+        let mut bw = BufWriter::new(File::create(&fasta_file)?);
+        let mut chrs = self.tree.keys().collect::<Vec<_>>();
+        chrs.sort_by_key(|a| a.as_bytes());
+        for chr in chrs {
+            for node in self.tree[chr].find(0..std::u64::MAX) {
+                let gene_row = node.data();
+                let gene = &self.rows[*gene_row];
+                if gene_types.is_empty() || gene_types.contains(&gene.feature_type) {
+                    if let Some(ref gene_children) = self.row2children.get(gene_row) {
+                        for transcript_row in gene_children.iter() {
+                            let transcript = &self.rows[*transcript_row];
+                            if transcript_types.is_empty() || transcript_types.contains(&transcript.feature_type) {
+                                let mut exons = Vec::<usize>::new();
+                                if let Some(child_rows) = self.row2children.get(transcript_row) {
+                                    for child_row in child_rows {
+                                        let child = &self.rows[*child_row];
+                                        if child.seqname == transcript.seqname {
+                                            if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
+                                                exons.push(*child_row);
+                                            }
+                                        }
+                                    }
+                                }
+                                if exons.is_empty() { exons.push(*transcript_row); }
+                                exons.sort_by_key(|a| self.rows[*a].start);
+                                let mut transcript_seq = String::new();
+                                for exon_row in &exons {
+                                    let exon = &self.rows[*exon_row];
+                                    if let Some(seq) = genome.get(&exon.seqname) {
+                                        if exon.end as usize > seq.1.len() {
+                                            return Err(format!("to_fasta: Range {}..{} of exon at row {} exceeds sequence for {} in file {}!", 
+                                                exon.start-1, exon.end, exon_row, exon.seqname, genome_file).into());
+                                        }
+                                        let exon_seq = &seq.1[(exon.start-1) as usize..exon.end as usize];
+                                        transcript_seq.push_str(&exon_seq);
+                                    }
+                                    else {
+                                        return Err(format!("to_fasta: Could not find fasta sequence for {} in file {}!",
+                                            exon.seqname, genome_file).into());
+                                    }
+                                }
+                                if transcript.strand == "-" {
+                                    let seq = transcript_seq.into_bytes();
+                                    transcript_seq = String::from_utf8(dna::revcomp(&seq))?;
+                                }
+                                
+                                let transcript_name = 
+                                    transcript.attributes.get("transcript_name").or_else(||
+                                    transcript.attributes.get("Name").or_else(||
+                                    transcript.attributes.get("ID")));
+                                let mut transcript_name = match transcript_name {
+                                    Some(t) => t.clone(),
+                                    None => String::from(format!("{}:{}..{}:{}", 
+                                        transcript.seqname, transcript.start-1, transcript.end, transcript.strand)),
+                                };
+                                while transcript_names.contains(&transcript_name) {
+                                    lazy_static! {
+                                        static ref TRANSCRIPT_RENAME: Regex = Regex::new(r"(?:\.([0-9]+))?$").unwrap();
+                                    }
+                                    transcript_name = String::from(TRANSCRIPT_RENAME.replace(&transcript_name.as_ref(), |caps: &Captures| {
+                                        format!(".{}", caps.get(1).map(|m| m.as_str().parse::<u64>().unwrap()).unwrap_or(0)+1)}));
+                                }
+                                transcript_names.insert(transcript_name.clone());
+                                
+                                lazy_static! {
+                                    static ref FASTA_FORMAT: Regex = Regex::new(r".{1,72}").unwrap();
+                                }
+                                transcript_seq = FASTA_FORMAT.replace_all(&transcript_seq,"\\&\n").into_owned();
+                                
+                                define_encode_set! {
+                                    pub GFF_ENCODE_SET = [SIMPLE_ENCODE_SET] | {'\t', '\r', '\n', ';', '%', '='}
+                                }
+                                let attrs = transcript.attributes.iter().map(|(k,v)| 
+                                    format!("{}={}", 
+                                        utf8_percent_encode(k, GFF_ENCODE_SET), 
+                                        utf8_percent_encode(v, GFF_ENCODE_SET))).join("; ");
+                                writeln!(bw, ">{} {}\n{}", transcript_name, attrs, transcript_seq)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

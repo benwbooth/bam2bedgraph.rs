@@ -107,6 +107,8 @@ struct Options {
     gene_type: Vec<String>,
     #[structopt(long="cds_type", help = "The CDS type(s) to search for", name="CDS_TYPE")]
     cds_type: Vec<String>,
+    #[structopt(long="genome", help = "The input genome FASTA file", name="GENOME_FASTA_FILE")]
+    genome_file: Option<String>,
     
     // flags
     #[structopt(long="max_iterations", help = "How many start/stop combinations before we skip this one?", name="MAX_ITERATIONS", default_value="1000000")]
@@ -139,6 +141,10 @@ struct Options {
     debug_trackdb: Option<String>,
     #[structopt(long="debug_outannot_bigbed", help = "Write the output annotation as a bigBed file", name="DEBUG_OUTANNOT_BIGBED_FILE")]
     debug_outannot_bigbed: Option<String>,
+    #[structopt(long="debug_outannot_gtf", help = "Write the output annotation as a gtf file", name="DEBUG_OUTANNOT_GTF_FILE")]
+    debug_outannot_gtf: Option<String>,
+    #[structopt(long="debug_outannot_fasta", help = "Write the output annotation as a fasta file", name="DEBUG_OUTANNOT_FASTA_FILE")]
+    debug_outannot_fasta: Option<String>,
     #[structopt(long="debug_retained_introns", help = "Write the retained introns to a file", name="DEBUG_RETAINED_INTRONS")]
     debug_retained_introns: Option<String>,
 }
@@ -1564,6 +1570,25 @@ fn write_enriched_annotation(
             &options.gene_type,
             trackdb)?; 
     }
+    if let Some(ref debug_outannot_gtf) = options.debug_outannot_gtf {
+        let newannot = IndexedAnnotation::from_gff(&outannot, 
+            &options.chrmap_file,
+            &options.vizchrmap_file)?;
+        newannot.to_gtf(&debug_outannot_gtf)?; 
+    }
+    if let Some(ref debug_outannot_fasta) = options.debug_outannot_fasta {
+        if let Some(ref genome_file) = options.genome_file {
+            let newannot = IndexedAnnotation::from_gff(&outannot, 
+                &options.chrmap_file,
+                &options.vizchrmap_file)?;
+            newannot.to_fasta(
+                &debug_outannot_fasta, 
+                &genome_file,
+                &options.exon_type, 
+                &options.transcript_type, 
+                &options.gene_type)?; 
+        }
+    }
     Ok(())
 }
 
@@ -1594,6 +1619,8 @@ fn run() -> Result<()> {
         if options.debug_rpkmstats_json.is_none() { options.debug_rpkmstats_json = Some(format!("{}.rpkmstats.json", options.debug_prefix)) }
         if options.debug_trackdb.is_none() { options.debug_trackdb = Some(format!("{}.trackDb.txt", options.debug_prefix)) }
         if options.debug_outannot_bigbed.is_none() { options.debug_outannot_bigbed = Some(format!("{}.outannot.bb", options.debug_prefix)) }
+        if options.debug_outannot_gtf.is_none() { options.debug_outannot_gtf = Some(format!("{}.outannot.gtf", options.debug_prefix)) }
+        if options.debug_outannot_fasta.is_none() { options.debug_outannot_fasta = Some(format!("{}.outannot.fa", options.debug_prefix)) }
         if options.debug_retained_introns.is_none() { options.debug_retained_introns = Some(format!("{}.retained_introns.txt", options.debug_prefix)) }
     }
     
@@ -1618,6 +1645,9 @@ fn run() -> Result<()> {
     if bamfiles.is_empty() {
         Options::clap().print_help()?;
         return Err("No bam files were passed in!".into());
+    }
+    if options.debug_outannot_fasta.is_some() && options.genome_file.is_none() {
+        return Err("No genome file was specified!".into());
     }
     let transcript_type = String::from("transcript");
     let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
