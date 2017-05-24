@@ -63,7 +63,7 @@ fn run() -> Result<()> {
                             overlapping_genes.push(gene_name.clone());
                         }
                     }
-                    if options.overlapping_genes && !overlapping_genes.is_empty() {
+                    if !options.overlapping_genes || !overlapping_genes.is_empty() {
                         println!("{}\t{}\t{}\t{}:{}..{}:{}\t{}", 
                             row,
                             record_gene_name,
