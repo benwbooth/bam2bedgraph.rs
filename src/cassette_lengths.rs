@@ -19,6 +19,9 @@ use structopt::StructOpt;
 #[structopt(name = "cassette_lengths", about = "Histogram of cassette exon lengths within the intron of tr of another gene")]
 struct Options {
     // input files
+    #[structopt(long="overlapping_genes", help = "Only show cassettes which overlap other genes?")]
+    overlapping_genes: bool,
+    // input files
     #[structopt(long="gff", help = "A genome annotation file in gff3 format", name="ANNOT_GFF_FILE")]
     annotfile_gff: Option<String>,
 }
@@ -60,7 +63,7 @@ fn run() -> Result<()> {
                             overlapping_genes.push(gene_name.clone());
                         }
                     }
-                    if !overlapping_genes.is_empty() {
+                    if options.overlapping_genes && !overlapping_genes.is_empty() {
                         println!("{}\t{}\t{}\t{}:{}..{}:{}\t{}", 
                             row,
                             record_gene_name,
