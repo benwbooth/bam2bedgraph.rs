@@ -1550,7 +1550,7 @@ fn write_enriched_annotation(
                 }
             }
             if transcript.strand=="-" {
-                records.sort_by(|a,b| b.start.cmp(&a.start));
+                records.sort_by(|a,b| a.start.cmp(&b.start));
             }
             for record in &mut records {
                 writeln!(output, "{}", record.to_gff()?)?;
