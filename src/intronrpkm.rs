@@ -731,7 +731,7 @@ fn reannotate_regions(
                 let tidmap = &tidmaps[bamfile];
                 if let Some(tid) = tidmap.get(&chr) {
                     let mut bam = IndexedReader::from_path(bamfile)?;
-                    bam.seek(*tid, start as u32, end as u32)?;
+                    bam.fetch(*tid, start as u32, end as u32)?;
                     for read in bam.records() {
                         let read = read?;
                         // make sure the read's strand matches

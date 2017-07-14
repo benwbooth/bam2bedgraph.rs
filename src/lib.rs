@@ -49,6 +49,7 @@ pub mod errors {
             IndexedReaderPath(::rust_htslib::bam::IndexedReaderPathError);
             ParseInt(::std::num::ParseIntError);
             Seek(::rust_htslib::bam::SeekError);
+            Fetch(::rust_htslib::bam::FetchError);
             Interval(::bio::utils::IntervalError);
             Csv(::csv::Error);
             Json(::serde_json::Error);
