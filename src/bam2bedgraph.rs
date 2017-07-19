@@ -232,6 +232,9 @@ fn analyze_bam(options: &Options,
 
     let mut read = rust_htslib::bam::record::Record::new();
     while bam.read(&mut read).is_ok() {
+        // skip unaligned reads
+        if read.tid() < 0 { continue }
+
         // if we've hit a new chr, write out the bedgraph data and clear the histogram
         if lastchr == -1 || read.tid() != lastchr {
             if !autostrand_pass && !histogram.is_empty() && lastchr != -1 {
