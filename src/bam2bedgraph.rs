@@ -77,7 +77,7 @@ fn open_file(options: &Options,
              read_number: i32,
              strand: &str,
              split_strand: &str,
-             fhs: &mut BTreeMap<String, Option<File>>)
+             fhs: &mut BTreeMap<String, Option<BufWriter<File>>>)
              -> Result<String> {
     let mut prefix = PathBuf::new();
     prefix.set_file_name(&options.bamfile);
@@ -136,7 +136,7 @@ fn open_file(options: &Options,
 fn write_chr(options: &Options,
              chr: &(u32, String),
              histogram: &BTreeMap<(i32, String), Vec<i32>>,
-             fhs: &mut BTreeMap<String, Option<File>>,
+             fhs: &mut BTreeMap<String, Option<BufWriter<File>>>,
              split_strand: &str)
              -> Result<()> {
     for (key, histo) in histogram {
@@ -220,7 +220,7 @@ fn analyze_bam(options: &Options,
     }
 
     let mut lastchr: i32 = -1;
-    let mut fhs: BTreeMap<String, Option<File>> = BTreeMap::new();
+    let mut fhs: BTreeMap<String, Option<BufWriter<File>>> = BTreeMap::new();
     let mut histogram: BTreeMap<(i32, String), Vec<i32>> = BTreeMap::new();
 
     let mut autostrand_totals: BTreeMap<char, i64> = BTreeMap::new();
