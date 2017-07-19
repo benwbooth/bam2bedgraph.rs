@@ -344,7 +344,7 @@ fn bed2bigbed(
 {
     // write the genome file
     let genome_filename = format!("{}.genome", bigbed_file);
-    {   let mut genome_fh = File::create(&genome_filename)?;
+    {   let mut genome_fh = BufWriter::new(File::create(&genome_filename)?);
         for (chr, length) in refs {
             writeln!(genome_fh, "{}\t{}", chr, length)?;
         }
@@ -392,9 +392,9 @@ fn bed2bigbed(
 fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<LinkedHashMap<String,u64>> {
     let mut refs = HashMap::<String,u64>::new();
     let f = File::open(&sizes_file)?;
-    let file = BufReader::new(&f);
-    for line in file.lines() {
-        let line = line?;
+    let mut file = BufReader::new(&f);
+    let mut line = String::new();
+    while file.read_line(&mut line)? > 0 {
         let cols: Vec<&str> = line.split('\t').collect();
         if let Some(chr) = cols.get(0) {
             let chr = String::from(*chr);
@@ -846,7 +846,7 @@ fn write_bigwig(
         collect::<LinkedHashMap<String,u64>>();
     // write the genome file
     let genome_filename = format!("{}.{}.bw.genome", file, strand);
-    {   let mut genome_fh = File::create(&genome_filename)?;
+    {   let mut genome_fh = BufWriter::new(File::create(&genome_filename)?);
         for (chr, length) in vizrefs {
             writeln!(genome_fh, "{}\t{}", chr, length)?;
         }

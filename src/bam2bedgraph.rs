@@ -121,7 +121,7 @@ fn open_file(options: &Options,
 
     // initialize the file if needed
     if !fhs.contains_key(&filename) {
-        let mut f = File::create(&filename)?;
+        let mut f = BufWriter::new(File::create(&filename)?);
         if options.trackline && !options.bigwig {
             writeln!(f,
                      "track type=bedGraph name=\"{}\" description=\"{}\" visibility=full",
@@ -464,7 +464,7 @@ fn analyze_bam(options: &Options,
             // write the genome file for bigwigs
             let genome_filename = format!("{}.genome", fh.0);
             {
-                let mut genome_fh = File::create(&genome_filename)?;
+                let mut genome_fh = BufWriter::new(File::create(&genome_filename)?);
                 for r in &refs {
                     writeln!(genome_fh, "{}\t{}", r.1, r.0)?;
                 }

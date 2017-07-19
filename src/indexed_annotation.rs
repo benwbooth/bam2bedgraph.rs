@@ -177,8 +177,8 @@ impl IndexedAnnotation {
         if let Some(charmap_file) = chrmap_file.clone() {
             let f = File::open(&charmap_file)?;
             let file = BufReader::new(&f);
-            for line in file.lines() {
-                let line = line?;
+            let mut line = String::new();
+            while file.read_line(&mut line)? > 0 {
                 let cols: Vec<&str> = line.split('\t').collect();
                 if let Some(key) = cols.get(0) {
                     if let Some(value) = cols.get(1) {
@@ -192,9 +192,8 @@ impl IndexedAnnotation {
         if let Some(vizcharmap_file) = vizchrmap_file.clone() {
             let f = File::open(&vizcharmap_file)?;
             let file = BufReader::new(&f);
-            for line in file.lines() {
-                let line = line?;
-                let cols: Vec<&str> = line.split('\t').collect();
+            let mut line = String::new();
+            while file.read_line(&mut line)? > 0 {
                 if let Some(key) = cols.get(0) {
                     if let Some(value) = cols.get(1) {
                         vizchrmap.insert(String::from(*key), String::from(*value));
@@ -208,7 +207,8 @@ impl IndexedAnnotation {
         let f = File::open(&annotfile)?;
         let file = BufReader::new(&f);
         let mut refs = HashMap::<String,u64>::new();
-        for line in file.lines() {
+        let mut line = String::new();
+        while file.read_line(&mut line)? > 0 {
             let row = rows.len();
             if let Ok(record) = Record::from_row(row, &line?, filetype, &chrmap) {
                 if let Some(id) = record.attributes.get("ID") {
@@ -653,7 +653,7 @@ impl IndexedAnnotation {
         
         // write the genome file
         let genome_filename = format!("{}.genome", file);
-        {   let mut genome_fh = File::create(&genome_filename)?;
+        {   let mut genome_fh = BufWriter::new(File::create(&genome_filename)?);
             for (chr, length) in &self.refs {
                 let chr = self.vizchrmap.get(chr).unwrap_or(chr);
                 writeln!(genome_fh, "{}\t{}", chr, length)?;
@@ -698,8 +698,8 @@ impl IndexedAnnotation {
         let mut header: Option<String> = None;
         let mut attrs: Option<String> = None;
         let mut sequence: Option<String> = None;
-        for line in file.lines() {
-            let line = line?;
+        let mut line = String::new();
+        while file.read_line(&mut line)? > 0 {
             if let Some(cap) = HEADER.captures(&line) {
                 if let Some(header) = header {
                     if let Some(attrs) = attrs {
