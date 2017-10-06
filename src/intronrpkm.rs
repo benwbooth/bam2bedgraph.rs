@@ -306,12 +306,20 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                             // then sort by lowest exon2_row
                             then_with(|| a.1.cmp(&b.1)));
                         if let Some(exon_row) = exon_rows.get(0) {
-                            exonpairs.push(ConstituitivePair {
-                                exon1_row: exon_row.0,
-                                exon2_row: exon_row.1,
-                                cassettes: Vec::new(),
-                                is_retained_intron: false,
-                            });
+                            let exon1 = &annot.rows[exon_row.0];
+                            let exon2 = &annot.rows[exon_row.1];
+                            let region = (exon2.start-1)-exon1.end;
+                            if region == 0 {
+                                writeln!(stderr(), "Region between exon1 (row {}) and exon2 (row {}) is zero, skipping constituitive pair", exon_row.0, exon_row.1)?;
+                            }
+                            else {
+                                exonpairs.push(ConstituitivePair {
+                                    exon1_row: exon_row.0,
+                                    exon2_row: exon_row.1,
+                                    cassettes: Vec::new(),
+                                    is_retained_intron: false,
+                                });
+                            }
                         }
                     }
                 }
