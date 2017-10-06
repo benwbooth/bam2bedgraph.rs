@@ -266,6 +266,13 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                                         or_insert_with(Vec::new).
                                         push((*transcript_row, exon1_row_, *exon_row));
                                     exon1_row = None;
+                                    let containing_trs = transcript_tree.
+                                        find(exon.end..exon.end).
+                                        map(|t| *t.data()).
+                                        collect::<HashSet<_>>();
+                                    if end2transcript[&(exon.end)].is_superset(&containing_trs) {
+                                        exon1_row = Some(*exon_row);
+                                    }
                                 }
                             }
                             else {
