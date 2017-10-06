@@ -397,8 +397,12 @@ fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<
             let chr = String::from(*chr);
             let chr = chrmap.get(&chr).unwrap_or(&chr);
             if let Some(size) = cols.get(1) {
-                let size = size.parse::<u64>()?;
-                refs.insert(chr.clone(), size);
+                if let Ok(size) = size.parse::<u64>() {
+                    refs.insert(chr.clone(), size);
+                }
+                else {
+                    return Err(format!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file).into());
+                }
             }
         }
     }
