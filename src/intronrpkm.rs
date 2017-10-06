@@ -194,7 +194,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                 let mut end2transcript = HashMap::<u64,HashSet<usize>>::new();
                 let mut transcript_tree = IntervalTree::<u64, usize>::new();
                 // splice start..splice end -> vec![(transcript_row, exon1_row, exon2_row, Some(cassette_row)]
-                let mut splices = HashMap::<Range<u64>,Vec<(usize,usize,usize,Option<usize>)>>::new();
+                let mut splices = HashMap::<Range<u64>,Vec<(usize,usize,usize)>>::new();
                 'transcript_row:
                 for transcript_row in feature_rows {
                     let transcript = &annot.rows[*transcript_row];
@@ -247,44 +247,34 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         }
                     }
                 }
+                // find constituitive splice pairs
                 for transcript_row in &transcript_rows {
                     if let Some(exon_rows) = transcript2exon.get(&transcript_row) {
                         let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
                         exon_rows.sort_by_key(|a| &annot.rows[**a].start);
-                        for (i, exon_row) in exon_rows.iter().enumerate() {
-                            let exon = &annot.rows[**exon_row];
-                            if i < exon_rows.len()-1  {
-                                // two adjacent constitutive exons
-                                let adjacent_row = exon_rows[i+1];
-                                let adjacent_exon = &annot.rows[*adjacent_row];
+                        let mut exon1_row: Option<usize> = None;
+                        for exon_row in exon_rows {
+                            let exon = &annot.rows[*exon_row];
+                            if let Some(exon1_row_) = exon1_row {
                                 let containing_trs = transcript_tree.
-                                    find(exon.end..adjacent_exon.start-1).
+                                    find((exon.start-1)..(exon.start-1)).
                                     map(|t| *t.data()).
-                                    filter(|t| annot.rows[*t].start-1 < exon.end && 
-                                        adjacent_exon.start-1 < annot.rows[*t].end).collect::<HashSet<_>>();
-                                if end2transcript[&exon.end].is_superset(&containing_trs)
-                                   && start2transcript[&(adjacent_exon.start-1)].is_superset(&containing_trs) 
-                                {
-                                    splices.entry(exon.end..(adjacent_exon.start-1)).
+                                    collect::<HashSet<_>>();
+                                if start2transcript[&(exon.start-1)].is_superset(&containing_trs) {
+                                    let exon1 = &annot.rows[exon1_row_];
+                                    splices.entry(exon1.end..(exon.start-1)).
                                         or_insert_with(Vec::new).
-                                        push((*transcript_row, **exon_row, *adjacent_row, None));
+                                        push((*transcript_row, exon1_row_, *exon_row));
+                                    exon1_row = None;
                                 }
-                                // two constituitive exons with a single cassette inbetween
-                                else if i < exon_rows.len()-2 {
-                                    let next_row = exon_rows[i+2];
-                                    let next_exon = &annot.rows[*next_row];
-                                    let containing_trs = transcript_tree.
-                                        find(exon.end..next_exon.start-1).
-                                        map(|t| *t.data()).
-                                        filter(|t| annot.rows[*t].start-1 < exon.end && 
-                                            next_exon.start-1 < annot.rows[*t].end).collect::<HashSet<_>>();
-                                    if !end2transcript[&(adjacent_exon.end)].is_superset(&containing_trs) &&
-                                        start2transcript[&(next_exon.start-1)].is_superset(&containing_trs) 
-                                    {
-                                        splices.entry(exon.end..(next_exon.start-1)).
-                                            or_insert_with(Vec::new).
-                                            push((*transcript_row, **exon_row, *next_row, Some(*adjacent_row)));
-                                    }
+                            }
+                            else {
+                                let containing_trs = transcript_tree.
+                                    find(exon.end..exon.end).
+                                    map(|t| *t.data()).
+                                    collect::<HashSet<_>>();
+                                if end2transcript[&(exon.end)].is_superset(&containing_trs) {
+                                    exon1_row = Some(*exon_row);
                                 }
                             }
                         }
@@ -296,11 +286,11 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         map(|t| *t.data()).
                         filter(|t| annot.rows[*t].start-1 < splice_range.start && 
                             splice_range.end < annot.rows[*t].end).collect::<HashSet<_>>();
-                    let splice_trs = splices.iter().map(|&(transcript_row,_,_,_)| transcript_row).collect::<HashSet<_>>();
+                    let splice_trs = splices.iter().map(|&(transcript_row,_,_)| transcript_row).collect::<HashSet<_>>();
                     // look at constituitive splices
                     if splice_trs.is_superset(&containing_trs) {
                         let mut exon_rows = HashSet::<(usize,usize)>::new();
-                        for &(_, exon1_row, exon2_row, _) in &splices {
+                        for &(_, exon1_row, exon2_row) in &splices {
                             exon_rows.insert((exon1_row, exon2_row));
                         }
                         // sort by shortest sum of exon lengths
