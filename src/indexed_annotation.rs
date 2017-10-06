@@ -176,9 +176,10 @@ impl IndexedAnnotation {
         let mut chrmap = HashMap::<String,String>::new();
         if let Some(charmap_file) = chrmap_file.clone() {
             let f = File::open(&charmap_file)?;
-            let file = BufReader::new(&f);
-            for line in file.lines() {
-                let line = line?;
+            let mut file = BufReader::new(&f);
+            let mut line = String::new();
+            while file.read_line(&mut line)? > 0 {
+                let line = line.trim_right_matches('\n').trim_right_matches('\r');
                 let cols: Vec<&str> = line.split('\t').collect();
                 if let Some(key) = cols.get(0) {
                     if let Some(value) = cols.get(1) {
@@ -191,9 +192,10 @@ impl IndexedAnnotation {
         let mut vizchrmap = HashMap::<String,String>::new();
         if let Some(vizcharmap_file) = vizchrmap_file.clone() {
             let f = File::open(&vizcharmap_file)?;
-            let file = BufReader::new(&f);
-            for line in file.lines() {
-                let line = line?;
+            let mut file = BufReader::new(&f);
+            let mut line = String::new();
+            while file.read_line(&mut line)? > 0 {
+                let line = line.trim_right_matches('\n').trim_right_matches('\r');
                 let cols: Vec<&str> = line.split('\t').collect();
                 if let Some(key) = cols.get(0) {
                     if let Some(value) = cols.get(1) {
@@ -206,10 +208,11 @@ impl IndexedAnnotation {
         let mut id2row = HashMap::<String, usize>::new();
         let mut rows = Vec::<Record>::new();
         let f = File::open(&annotfile)?;
-        let file = BufReader::new(&f);
+        let mut file = BufReader::new(&f);
         let mut refs = HashMap::<String,u64>::new();
-        for line in file.lines() {
-            let line = line?;
+        let mut line = String::new();
+        while file.read_line(&mut line)? > 0 {
+            let line = line.trim_right_matches('\n').trim_right_matches('\r');
             let row = rows.len();
             if let Ok(record) = Record::from_row(row, &line, filetype, &chrmap) {
                 if let Some(id) = record.attributes.get("ID") {
@@ -695,12 +698,13 @@ impl IndexedAnnotation {
             static ref HEADER: Regex = Regex::new(r"^>(\S*)([^\n]*)").unwrap();
         }
         let f = File::open(&fasta_file)?;
-        let file = BufReader::new(&f);
+        let mut file = BufReader::new(&f);
         let mut header: Option<String> = None;
         let mut attrs: Option<String> = None;
         let mut sequence: Option<String> = None;
-        for line in file.lines() {
-            let line = line?;
+        let mut line = String::new();
+        while file.read_line(&mut line)? > 0 {
+            let line = line.trim_right_matches('\n').trim_right_matches('\r');
             if let Some(cap) = HEADER.captures(&line) {
                 if let Some(header) = header {
                     if let Some(attrs) = attrs {

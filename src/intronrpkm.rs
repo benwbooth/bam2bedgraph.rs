@@ -389,9 +389,10 @@ fn bed2bigbed(
 fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<LinkedHashMap<String,u64>> {
     let mut refs = HashMap::<String,u64>::new();
     let f = File::open(&sizes_file)?;
-    let file = BufReader::new(&f);
-    for line in file.lines() {
-        let line = line?;
+    let mut file = BufReader::new(&f);
+    let mut line = String::new();
+    while file.read_line(&mut line)? > 0 {
+        let line = line.trim_right_matches('\n').trim_right_matches('\r');
         let cols: Vec<&str> = line.split('\t').collect();
         if let Some(chr) = cols.get(0) {
             let chr = String::from(*chr);
