@@ -234,16 +234,12 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                     if let Some(exon_rows) = transcript2exon.get(&transcript_row) {
                         let mut exon_rows = exon_rows.iter().collect::<Vec<_>>();
                         exon_rows.sort_by_key(|a| &annot.rows[**a].start);
-                        for (i, exon_row) in exon_rows.iter().enumerate() {
-                            let exon = &annot.rows[**exon_row];
-                            if i > 0 {
-                                start2transcript.entry(exon.start-1).or_insert_with(HashSet::new).
-                                    insert(*transcript_row);
-                            }
-                            if i < exon_rows.len()-1 {
-                                end2transcript.entry(exon.end).or_insert_with(HashSet::new).
-                                    insert(*transcript_row);
-                            }
+                        for exon_row in exon_rows {
+                            let exon = &annot.rows[*exon_row];
+                            start2transcript.entry(exon.start-1).or_insert_with(HashSet::new).
+                                insert(*transcript_row);
+                            end2transcript.entry(exon.end).or_insert_with(HashSet::new).
+                                insert(*transcript_row);
                         }
                     }
                 }
