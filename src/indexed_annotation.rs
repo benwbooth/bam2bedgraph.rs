@@ -177,15 +177,17 @@ impl IndexedAnnotation {
         if let Some(charmap_file) = chrmap_file.clone() {
             let f = File::open(&charmap_file)?;
             let mut file = BufReader::new(&f);
-            let mut line = String::new();
-            while file.read_line(&mut line)? > 0 {
-                let line = line.trim_right_matches('\n').trim_right_matches('\r');
-                let cols: Vec<&str> = line.split('\t').collect();
-                if let Some(key) = cols.get(0) {
-                    if let Some(value) = cols.get(1) {
-                        chrmap.insert(String::from(*key), String::from(*value));
+            let mut buf = String::new();
+            while file.read_line(&mut buf)? > 0 {
+                {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    if let Some(key) = cols.get(0) {
+                        if let Some(value) = cols.get(1) {
+                            chrmap.insert(String::from(*key), String::from(*value));
+                        }
                     }
                 }
+                buf.clear();
             }
         }
         // read in the optional visualization chr map
@@ -193,15 +195,17 @@ impl IndexedAnnotation {
         if let Some(vizcharmap_file) = vizchrmap_file.clone() {
             let f = File::open(&vizcharmap_file)?;
             let mut file = BufReader::new(&f);
-            let mut line = String::new();
-            while file.read_line(&mut line)? > 0 {
-                let line = line.trim_right_matches('\n').trim_right_matches('\r');
-                let cols: Vec<&str> = line.split('\t').collect();
-                if let Some(key) = cols.get(0) {
-                    if let Some(value) = cols.get(1) {
-                        vizchrmap.insert(String::from(*key), String::from(*value));
+            let mut buf = String::new();
+            while file.read_line(&mut buf)? > 0 {
+                {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    if let Some(key) = cols.get(0) {
+                        if let Some(value) = cols.get(1) {
+                            vizchrmap.insert(String::from(*key), String::from(*value));
+                        }
                     }
                 }
+                buf.clear();
             }
         }
         
@@ -210,19 +214,21 @@ impl IndexedAnnotation {
         let f = File::open(&annotfile)?;
         let mut file = BufReader::new(&f);
         let mut refs = HashMap::<String,u64>::new();
-        let mut line = String::new();
-        while file.read_line(&mut line)? > 0 {
-            let line = line.trim_right_matches('\n').trim_right_matches('\r');
-            let row = rows.len();
-            if let Ok(record) = Record::from_row(row, &line, filetype, &chrmap) {
-                if let Some(id) = record.attributes.get("ID") {
-                    id2row.insert(id.clone(), row);
+        let mut buf = String::new();
+        while file.read_line(&mut buf)? > 0 {
+            {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
+                let row = rows.len();
+                if let Ok(record) = Record::from_row(row, &line, filetype, &chrmap) {
+                    if let Some(id) = record.attributes.get("ID") {
+                        id2row.insert(id.clone(), row);
+                    }
+                    // get the max ref lengths
+                    let mut reflength = refs.entry(record.seqname.clone()).or_insert(record.end);
+                    if *reflength < record.end { *reflength = record.end }
+                    rows.push(record);
                 }
-                // get the max ref lengths
-                let mut reflength = refs.entry(record.seqname.clone()).or_insert(record.end);
-                if *reflength < record.end { *reflength = record.end }
-                rows.push(record);
             }
+            buf.clear();
         }
         // sort the refs
         let mut sorted_refs = LinkedHashMap::<String,u64>::new();
@@ -702,24 +708,26 @@ impl IndexedAnnotation {
         let mut header: Option<String> = None;
         let mut attrs: Option<String> = None;
         let mut sequence: Option<String> = None;
-        let mut line = String::new();
-        while file.read_line(&mut line)? > 0 {
-            let line = line.trim_right_matches('\n').trim_right_matches('\r');
-            if let Some(cap) = HEADER.captures(&line) {
-                if let Some(header) = header {
-                    if let Some(attrs) = attrs {
-                        if let Some(sequence) = sequence {
-                            fasta.insert(header.clone(), (attrs.clone(), sequence.clone()));
+        let mut buf = String::new();
+        while file.read_line(&mut buf)? > 0 {
+            {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
+                if let Some(cap) = HEADER.captures(&line) {
+                    if let Some(header) = header {
+                        if let Some(attrs) = attrs {
+                            if let Some(sequence) = sequence {
+                                fasta.insert(header.clone(), (attrs.clone(), sequence.clone()));
+                            }
                         }
                     }
+                    header = Some(cap[1].to_string());
+                    attrs = Some(cap[2].to_string());
+                    sequence = Some(String::new());
                 }
-                header = Some(cap[1].to_string());
-                attrs = Some(cap[2].to_string());
-                sequence = Some(String::new());
+                else if let Some(ref mut sequence) = sequence {
+                    sequence.push_str(line.trim());
+                }
             }
-            else if let Some(ref mut sequence) = sequence {
-                sequence.push_str(line.trim());
-            }
+            buf.clear();
         }
         if let Some(header) = header {
             if let Some(attrs) = attrs {

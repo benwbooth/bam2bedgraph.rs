@@ -390,22 +390,24 @@ fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<
     let mut refs = HashMap::<String,u64>::new();
     let f = File::open(&sizes_file)?;
     let mut file = BufReader::new(&f);
-    let mut line = String::new();
-    while file.read_line(&mut line)? > 0 {
-        let line = line.trim_right_matches('\n').trim_right_matches('\r');
-        let cols: Vec<&str> = line.split('\t').collect();
-        if let Some(chr) = cols.get(0) {
-            let chr = String::from(*chr);
-            let chr = chrmap.get(&chr).unwrap_or(&chr);
-            if let Some(size) = cols.get(1) {
-                if let Ok(size) = size.parse::<u64>() {
-                    refs.insert(chr.clone(), size);
-                }
-                else {
-                    return Err(format!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file).into());
+    let mut buf = String::new();
+    while file.read_line(&mut buf)? > 0 {
+        {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
+            let cols: Vec<&str> = line.split('\t').collect();
+            if let Some(chr) = cols.get(0) {
+                let chr = String::from(*chr);
+                let chr = chrmap.get(&chr).unwrap_or(&chr);
+                if let Some(size) = cols.get(1) {
+                    if let Ok(size) = size.parse::<u64>() {
+                        refs.insert(chr.clone(), size);
+                    }
+                    else {
+                        return Err(format!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file).into());
+                    }
                 }
             }
         }
+        buf.clear();
     }
     let mut chrs = refs.keys().collect::<Vec<_>>();
     chrs.sort_by_key(|a| a.as_bytes());
