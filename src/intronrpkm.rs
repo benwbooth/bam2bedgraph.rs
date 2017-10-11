@@ -203,7 +203,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                     if (transcript_types.is_empty() || 
                             transcript_types.contains(&transcript.feature_type)) &&
                         transcript.seqname == gene.seqname &&
-                        transcript.strand == gene.strand 
+                        transcript.strand == gene.strand
                     {
                         if let Some(exon_rows) = annot.row2children.get(transcript_row) {
                             // first get exon start/stop -> transcript associations
@@ -252,18 +252,18 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                         for exon_row in exon_rows {
                             let exon = &annot.rows[*exon_row];
                             if let Some(exon1_row_) = exon1_row {
+                                let exon1 = &annot.rows[exon1_row_];
                                 let containing_trs = transcript_tree.
-                                    find((exon.start-1)..(exon.start-1)).
+                                    find((exon.start-1)..exon.start).
                                     map(|t| *t.data()).
                                     collect::<HashSet<_>>();
                                 if start2transcript[&(exon.start-1)].is_superset(&containing_trs) {
-                                    let exon1 = &annot.rows[exon1_row_];
                                     splices.entry(exon1.end..(exon.start-1)).
                                         or_insert_with(Vec::new).
                                         push((*transcript_row, exon1_row_, *exon_row));
                                     exon1_row = None;
                                     let containing_trs = transcript_tree.
-                                        find(exon.end..exon.end).
+                                        find(exon.end..exon.end+1).
                                         map(|t| *t.data()).
                                         collect::<HashSet<_>>();
                                     if end2transcript[&(exon.end)].is_superset(&containing_trs) {
@@ -273,7 +273,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                             }
                             else {
                                 let containing_trs = transcript_tree.
-                                    find(exon.end..exon.end).
+                                    find(exon.end..exon.end+1).
                                     map(|t| *t.data()).
                                     collect::<HashSet<_>>();
                                 if end2transcript[&(exon.end)].is_superset(&containing_trs) {
@@ -1053,6 +1053,18 @@ fn write_rpkm_stats(
             rpkm.total_cassette_rpkm))?;
     }
     Ok(())
+}
+
+fn get_name(row: usize, annot: &IndexedAnnotation) -> Option<String> {
+    let name = annot.rows[row].attributes.get("transcript_name").or_else(||
+        annot.rows[row].attributes.get("transcript").or_else(||
+        annot.rows[row].attributes.get("Name").or_else(||
+        annot.rows[row].attributes.get("ID").or_else(||
+        annot.rows[row].attributes.get("transcript_id").or_else(||
+        annot.rows[row].attributes.get("gene_name").or_else(||
+        annot.rows[row].attributes.get("gene").or_else(||
+        annot.rows[row].attributes.get("gene_id"))))))));
+    name.map(|n| n.to_string())
 }
 
 fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String {

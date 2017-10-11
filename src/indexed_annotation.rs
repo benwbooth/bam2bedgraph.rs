@@ -19,7 +19,7 @@ use ::errors::*;
 use itertools::Itertools;
 use unindent::unindent;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Record {
     pub row: usize,
     pub seqname: String,
@@ -31,6 +31,23 @@ pub struct Record {
     pub strand: String,
     pub frame: String,
     pub attributes: LinkedHashMap<String, String>,
+}
+
+impl std::fmt::Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, 
+            "Record(row={}, seqname=\"{}\", source=\"{}\", feature_type=\"{}\", start={}, end={}, score={}, strand={}, frame={}{})",
+            self.row,
+            self.seqname,
+            self.source,
+            self.feature_type,
+            self.start,
+            self.end,
+            self.score,
+            self.strand,
+            self.frame,
+            self.attributes.iter().map(|(k,v)| format!(", {}=\"{}\"", k, v)).join(""))
+    }
 }
 
 impl PartialEq for Record {
