@@ -572,8 +572,6 @@ impl IndexedAnnotation {
                                                         cds_features.push(*child_row);
                                                     }
                                                     else if exon_types.is_empty() || exon_types.contains(&child.feature_type) {
-                                                        exon_starts.insert(self.rows[*child_row].start-1);
-                                                        exon_ends.insert(self.rows[*child_row].end);
                                                         exons.push(*child_row);
                                                     }
                                                 }
@@ -582,23 +580,53 @@ impl IndexedAnnotation {
                                         if exons.is_empty() { exons.push(*transcript_row); }
                                         exons.sort_by_key(|a| self.rows[*a].start);
                                         cds_features.sort_by_key(|a| self.rows[*a].start);
-                                        
+
+                                        // merge the exon records
+                                        let mut merged_exons = Vec::<Range<u64>>::new();
+                                        for exon_row in &exons {
+                                            let exon = &self.rows[*exon_row];
+                                            if merged_exons.is_empty() || merged_exons[merged_exons.len()-1].end < exon.start-1 {
+                                                merged_exons.push((exon.start-1)..exon.end);
+                                            }
+                                            else {
+                                                if let Some(last) = merged_exons.last_mut() {
+                                                    (*last).end = exon.end;
+                                                }
+                                            }
+                                        }
+                                        // merge the cds records
+                                        let mut merged_cds = Vec::<Range<u64>>::new();
+                                        for cds_row in &cds_features {
+                                            let cds = &self.rows[*cds_row];
+                                            if merged_cds.is_empty() || merged_cds[merged_cds.len()-1].end < cds.start-1 {
+                                                merged_cds.push((cds.start-1)..cds.end);
+                                            }
+                                            else {
+                                                if let Some(last) = merged_cds.last_mut() {
+                                                    (*last).end = cds.end;
+                                                }
+                                            }
+                                        }
+                                        // fill in exon starts/ends
+                                        for exon in &merged_exons {
+                                            exon_starts.insert(exon.start);
+                                            exon_ends.insert(exon.end);
+                                        }
                                         // get the cds ranges by unsplicing the CDS features
                                         let mut cdss = Vec::<Range<u64>>::new();
-                                        for cds_feature_row in cds_features {
-                                            let cds_feature = &self.rows[cds_feature_row];
-                                            if !cdss.is_empty() && 
-                                                exon_ends.contains(&cdss[cdss.len()-1].end) && 
-                                                exon_starts.contains(&(cds_feature.start-1)) 
+                                        for cds in merged_cds {
+                                            if !cdss.is_empty() &&
+                                                exon_ends.contains(&cdss[cdss.len()-1].end) &&
+                                                exon_starts.contains(&cds.start)
                                             {
                                                 // extend current CDS if this is a splice
                                                 if let Some(last) = cdss.last_mut() {
-                                                    (*last).end = cds_feature.end;
+                                                    (*last).end = cds.end;
                                                 }
                                             }
                                             else {
                                                 // otherwise add new CDS
-                                                cdss.push((cds_feature.start-1)..cds_feature.end);
+                                                cdss.push(cds.start..cds.end);
                                             }
                                         }
                                         cdss.sort_by_key(|a| a.start);
@@ -642,9 +670,9 @@ impl IndexedAnnotation {
                                                 &cds.start.to_string(),
                                                 &cds.end.to_string(),
                                                 item_rgb,
-                                                &exons.len().to_string(),
-                                                &exons.iter().map(|e| (self.rows[*e].end-self.rows[*e].start+1).to_string()).join(","),
-                                                &exons.iter().map(|e| ((self.rows[*e].start-1)-start).to_string()).join(","),
+                                                &merged_exons.len().to_string(),
+                                                &merged_exons.iter().map(|e| (e.end-e.start).to_string()).join(","),
+                                                &merged_exons.iter().map(|e| (e.start-start).to_string()).join(","),
                                             ].iter().join("\t");
                                             writeln!(bw, "{}", line)?;
                                         }
