@@ -643,7 +643,8 @@ impl IndexedAnnotation {
                                             let transcript_name = 
                                                 transcript.attributes.get("transcript_name").or_else(||
                                                 transcript.attributes.get("Name").or_else(||
-                                                transcript.attributes.get("ID")));
+                                                transcript.attributes.get("transcript_id").or_else(||
+                                                transcript.attributes.get("ID"))));
                                             let mut transcript_name = match transcript_name {
                                                 Some(t) => t.clone(),
                                                 None => String::from(format!("{}:{}..{}:{}", 

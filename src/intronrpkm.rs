@@ -1267,7 +1267,7 @@ fn write_enriched_annotation(
                 }
                 names.insert(transcript_name.clone());
                 Some(transcript_name)
-            } else {transcript_name};
+            } else {transcript_id.clone()};
             // create a new transcript record
             let mut new_transcript = transcript.clone();
             if let Some(ref transcript_id) = transcript_id {
