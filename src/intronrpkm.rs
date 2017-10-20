@@ -531,9 +531,10 @@ fn reannotate_pair(
     let mut exon_start = start;
     let mut exon_value = histo[exon_start-start];
     let mut exon_regions = Vec::<Range<usize>>::new();
+    const MIN_READ_COUNT_PER_BASE: i32 = 1;
     for (i, value) in histo.iter().enumerate() {
         if (*value == 0) != (exon_value == 0) {
-            if exon_value > 0 {
+            if exon_value >= MIN_READ_COUNT_PER_BASE {
                 let exon_end = i+start;
                 exon_regions.push(exon_start..exon_end);
             }
@@ -541,17 +542,19 @@ fn reannotate_pair(
             exon_value = *value;
         }
     }
+    const MIN_STARTS: i32 = 2;
+    const MIN_STOPS: i32 = 2;
     'EXON_REGION:
     for exon_region in exon_regions {
         let mut starts = Vec::<(usize,i32)>::new();
         for (i, value) in start_histo[(exon_region.start-start)..(exon_region.end-start)].iter().enumerate() {
-            if *value > 0 {
+            if *value >= MIN_STARTS {
                 starts.push((i+exon_region.start,*value));
             }
         }
         let mut ends = Vec::<(usize,i32)>::new();
         for (i, value) in end_histo[(exon_region.start-start)..(exon_region.end-start)].iter().enumerate() {
-            if *value > 0 {
+            if *value >= MIN_STOPS {
                 ends.push((i+exon_region.start,*value));
             }
         }
