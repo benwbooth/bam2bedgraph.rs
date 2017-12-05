@@ -15,9 +15,9 @@ use std::io::{BufReader, BufWriter, BufRead, Write};
 use std::io::stdout;
 use std::ops::Range;
 use std::path::Path;
-use ::errors::*;
 use itertools::Itertools;
 use unindent::unindent;
+use ::error::*;
 
 #[derive(Default, Clone, Debug)]
 pub struct Record {
@@ -83,7 +83,7 @@ impl Record {
             static ref GTF_ATTR: Regex = Regex::new(r#"^(?P<key>\S+)\s+(?:"(?P<qval>[^"]*)"|(?P<val>\S+));\s*"#).unwrap();
         }
         if COMMENT.is_match(line) {
-            return Err("Comment".into());
+            bail!("Comment");
         }
         let fields: Vec<_> = line.split('\t').collect();
         let seqname = String::from(*fields.get(0).unwrap_or(&""));
@@ -111,7 +111,7 @@ impl Record {
                      String::from(caps.name("qval").unwrap_or_else(|| caps.name("val").unwrap()).as_str().to_string()))
                 }).collect()
             } else {
-                return Err(format!("Don't know how to read filetype {}", filetype).into());
+                bail!("Don't know how to read filetype {}", filetype);
             },
         })
     }
@@ -240,7 +240,7 @@ impl IndexedAnnotation {
                         id2row.insert(id.clone(), row);
                     }
                     // get the max ref lengths
-                    let mut reflength = refs.entry(record.seqname.clone()).or_insert(record.end);
+                    let reflength = refs.entry(record.seqname.clone()).or_insert(record.end);
                     if *reflength < record.end { *reflength = record.end }
                     rows.push(record);
                 }
@@ -391,7 +391,7 @@ impl IndexedAnnotation {
         // update the missing information
         for u in &mut updates {
             let update = &mut u.1;
-            let mut record = &mut rows[u.0];
+            let record = &mut rows[u.0];
             record.seqname = update.seqname.clone();
             record.source = update.source.clone();
             record.start = update.start;
@@ -401,7 +401,7 @@ impl IndexedAnnotation {
         // sort row2parents by coordinates
         let mut row2parents_update = HashMap::<usize, Vec<usize>>::new();
         for (row, parents) in row2parents {
-            let mut up = row2parents_update.entry(row).or_insert_with(Vec::new);
+            let up = row2parents_update.entry(row).or_insert_with(Vec::new);
             let mut vec: Vec<_> = parents.into_iter().collect();
             vec.sort_by(|a, b| {
                 rows[*a]
@@ -414,7 +414,7 @@ impl IndexedAnnotation {
         // sort row2children by coordinates
         let mut row2children_update = HashMap::<usize, Vec<usize>>::new();
         for (row, children) in row2children {
-            let mut up = row2children_update.entry(row).or_insert_with(Vec::new);
+            let up = row2children_update.entry(row).or_insert_with(Vec::new);
             let mut vec: Vec<_> = children.into_iter().collect();
             vec.sort_by(|a, b| {
                 rows[*a]
@@ -427,7 +427,7 @@ impl IndexedAnnotation {
         // build the interval tree
         let mut tree = HashMap::<String, IntervalTree<u64, usize>>::new();
         for (row, record) in rows.iter().enumerate() {
-            let mut t = tree.entry(record.seqname.clone()).or_insert_with(IntervalTree::new);
+            let t = tree.entry(record.seqname.clone()).or_insert_with(IntervalTree::new);
             t.insert(Interval::new((record.start - 1)..(record.end))?, row);
         }
         
@@ -828,15 +828,15 @@ impl IndexedAnnotation {
                                     let exon = &self.rows[*exon_row];
                                     if let Some(seq) = genome.get(&exon.seqname) {
                                         if exon.end as usize > seq.1.len() {
-                                            return Err(format!("to_fasta: Range {}..{} of exon at row {} exceeds sequence for {} in file {}!", 
-                                                exon.start-1, exon.end, exon_row, exon.seqname, genome_file).into());
+                                            bail!("to_fasta: Range {}..{} of exon at row {} exceeds sequence for {} in file {}!", 
+                                                exon.start-1, exon.end, exon_row, exon.seqname, genome_file);
                                         }
                                         let exon_seq = &seq.1[(exon.start-1) as usize..exon.end as usize];
                                         transcript_seq.push_str(&exon_seq);
                                     }
                                     else {
-                                        return Err(format!("to_fasta: Could not find fasta sequence for {} in file {}!",
-                                            exon.seqname, genome_file).into());
+                                        bail!("to_fasta: Could not find fasta sequence for {} in file {}!",
+                                            exon.seqname, genome_file);
                                     }
                                 }
                                 if transcript.strand == "-" {
@@ -849,7 +849,7 @@ impl IndexedAnnotation {
                                     transcript.attributes.get("ID")).
                                     map(|a| a.to_owned());
                                 if transcript_name.is_none() {
-                                    return Err(format!("Could not get ID for transcript at row {}", transcript_row).into());
+                                    bail!("Could not get ID for transcript at row {}", transcript_row);
                                 }
                                 let transcript_name = transcript_name.r()?;
                                 lazy_static! {

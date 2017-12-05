@@ -5,7 +5,7 @@ authors = ["Ben Booth <benwbooth@gmail.com>"]
 
 [dependencies]
 regex = "*"
-error-chain = "*"
+failure = "*"
 structopt = "*"
 structopt-derive = "*"
 bio = "*"

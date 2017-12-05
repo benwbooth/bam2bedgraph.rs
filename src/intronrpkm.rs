@@ -12,8 +12,11 @@ use std::io::{stdout, stderr, sink};
 use std::path::Path;
 use std::sync::Arc;
 
+#[macro_use] 
+extern crate failure;
+
 extern crate bam2bedgraph;
-use bam2bedgraph::errors::*;
+use bam2bedgraph::error::*;
 use bam2bedgraph::cigar2exons;
 use bam2bedgraph::power_set::PowerSet;
 use bam2bedgraph::indexed_annotation::IndexedAnnotation;
@@ -193,7 +196,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                 let mut start2transcript = HashMap::<u64,HashSet<usize>>::new();
                 let mut end2transcript = HashMap::<u64,HashSet<usize>>::new();
                 let mut transcript_tree = IntervalTree::<u64, usize>::new();
-                // splice start..splice end -> vec![(transcript_row, exon1_row, exon2_row, Some(cassette_row)]
+                // splice start..splice end -> vec![(transcript_row, exon1_row, exon2_row)]
                 let mut splices = HashMap::<Range<u64>,Vec<(usize,usize,usize)>>::new();
                 'transcript_row:
                 for transcript_row in feature_rows {
@@ -406,7 +409,7 @@ fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<
                         refs.insert(chr.clone(), size);
                     }
                     else {
-                        return Err(format!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file).into());
+                        bail!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file);
                     }
                 }
             }
@@ -962,7 +965,7 @@ fn compute_rpkm(
     if pair.cassettes.is_empty() {
         let intron_range = annot.rows[pair.exon1_row].end..(annot.rows[pair.exon2_row].start-1);
         for read in mapped_reads.find(&intron_range) {
-            let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+            let intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
             intron_read.push(read.interval().start..read.interval().end);
         }
         intron_features.push(intron_range);
@@ -970,7 +973,7 @@ fn compute_rpkm(
     else {
         let intron_range = annot.rows[pair.exon1_row].end..pair.cassettes[0].range.start;
         for read in mapped_reads.find(&intron_range) {
-            let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+            let intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
             intron_read.push(read.interval().start..read.interval().end);
         }
         intron_features.push(intron_range);
@@ -978,7 +981,7 @@ fn compute_rpkm(
         for (i, cassette) in pair.cassettes.iter().enumerate() {
             let reads: Vec<_> = mapped_reads.find(&cassette.range).collect();
             for read in &reads {
-                let mut cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                let cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                 cassette_read.push(read.interval().start..read.interval().end);
             }
             let exon_rpkm = (1e10f64 * reads.len() as f64) / 
@@ -987,7 +990,7 @@ fn compute_rpkm(
             if i < pair.cassettes.len()-1 {
                 let intron_range = cassette.range.end..pair.cassettes[i+1].range.start;
                 for read in mapped_reads.find(&intron_range) {
-                    let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                    let intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                     intron_read.push(read.interval().start..read.interval().end);
                 }
                 intron_features.push(intron_range);
@@ -996,7 +999,7 @@ fn compute_rpkm(
         
         let intron_range = pair.cassettes[pair.cassettes.len()-1].range.start..annot.rows[pair.exon2_row].start;
         for read in mapped_reads.find(&intron_range) {
-                let mut intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
+                let intron_read = intron_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                 intron_read.push(read.interval().start..read.interval().end);
         }
         intron_features.push(intron_range);
@@ -1274,21 +1277,21 @@ fn write_enriched_annotation(
             // create a new transcript record
             let mut new_transcript = transcript.clone();
             if let Some(ref transcript_id) = transcript_id {
-                {   let mut entry = new_transcript.attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                {   let entry = new_transcript.attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
                     entry.clear();
                     entry.push_str(&mut transcript_id.clone());
                 }
-                {   let mut entry = new_transcript.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                {   let entry = new_transcript.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
                     entry.clear();
                     entry.push_str(&mut transcript_id.clone());
                 }
             }
             if let Some(ref transcript_name) = transcript_name {
-                {   let mut entry = new_transcript.attributes.entry("Name".to_string()).or_insert_with(|| "".to_string());
+                {   let entry = new_transcript.attributes.entry("Name".to_string()).or_insert_with(|| "".to_string());
                     entry.clear();
                     entry.push_str(&mut transcript_name.clone());
                 }
-                {   let mut entry = new_transcript.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                {   let entry = new_transcript.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
                     entry.clear();
                     entry.push_str(&mut transcript_name.clone());
                 }
@@ -1328,26 +1331,26 @@ fn write_enriched_annotation(
                         }
                     }
                     
-                    {   let mut entry = child.attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
+                    {   let entry = child.attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
                         entry.clear();
                         entry.push_str(&mut newparents.join(","));
                     }
                     // update transcript_id and transcript_name attributes
                     if child.attributes.contains_key("transcript_id") {
                         if let Some(ref transcript_id) = transcript_id {
-                            let mut entry = child.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                            let entry = child.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
                             entry.clear();
                             entry.push_str(&mut transcript_id.clone());
                         }
                     }
                     if child.attributes.contains_key("transcript_name") {
                         if let Some(ref transcript_name) = transcript_name {
-                            let mut entry = child.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                            let entry = child.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
                             entry.clear();
                             entry.push_str(&mut transcript_name.clone());
                         }
                     }
-                    if let Some(mut id) = child.attributes.get_mut("ID") {
+                    if let Some(id) = child.attributes.get_mut("ID") {
                         let mut feature_id = format!("{}.reannot", id);
                         while ids.contains(&feature_id) {
                             feature_id = String::from(EXON_RENAME.replace(&feature_id.as_ref(), |caps: &Captures| {
@@ -1386,19 +1389,19 @@ fn write_enriched_annotation(
                                 // update transcript_id and transcript_name attributes
                                 if cc.attributes.contains_key("transcript_id") {
                                     if let Some(ref transcript_id) = transcript_id {
-                                        let mut entry = cc.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                                        let entry = cc.attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
                                         entry.clear();
                                         entry.push_str(&mut transcript_id.clone());
                                     }
                                 }
                                 if cc.attributes.contains_key("transcript_name") {
                                     if let Some(ref transcript_name) = transcript_name {
-                                        let mut entry = cc.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                                        let entry = cc.attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
                                         entry.clear();
                                         entry.push_str(&mut transcript_name.clone());
                                     }
                                 }
-                                if let Some(mut id) = cc.attributes.get_mut("ID") {
+                                if let Some(id) = cc.attributes.get_mut("ID") {
                                     let mut feature_id = format!("{}.reannot", id);
                                     while ids.contains(&feature_id) {
                                         feature_id = String::from(EXON_RENAME.replace(&feature_id.as_ref(), |caps: &Captures| {
@@ -1458,27 +1461,27 @@ fn write_enriched_annotation(
                         
                         let mut attributes = exon1.attributes.clone();
                         if let Some(cassette_id) = cassette_id {
-                            {   let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                            {   let entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
                                 entry.clear();
                                 entry.push_str(&mut cassette_id.clone());
                             }
-                            {   let mut entry = attributes.entry("exon_id".to_string()).or_insert_with(|| "".to_string());
+                            {   let entry = attributes.entry("exon_id".to_string()).or_insert_with(|| "".to_string());
                                 entry.clear();
                                 entry.push_str(&mut cassette_id.clone());
                             }
                         }
                         if let Some(ref transcript_id) = transcript_id {
-                            let mut entry = attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
+                            let entry = attributes.entry("Parent".to_string()).or_insert_with(|| "".to_string());
                             entry.clear();
                             entry.push_str(&mut transcript_id.clone());
                         }
                         if let Some(ref transcript_id) = transcript_id {
-                            let mut entry = attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
+                            let entry = attributes.entry("transcript_id".to_string()).or_insert_with(|| "".to_string());
                             entry.clear();
                             entry.push_str(&mut transcript_id.clone());
                         }
                         if let Some(ref transcript_name) = transcript_name {
-                            let mut entry = attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
+                            let entry = attributes.entry("transcript_name".to_string()).or_insert_with(|| "".to_string());
                             entry.clear();
                             entry.push_str(&mut transcript_name.clone());
                         }
@@ -1511,7 +1514,7 @@ fn write_enriched_annotation(
                                 Some(cds_id)
                             } else {cds_id};
                             if let Some(cds_id) = cds_id {
-                                let mut entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
+                                let entry = attributes.entry("ID".to_string()).or_insert_with(|| "".to_string());
                                 entry.clear();
                                 entry.push_str(&mut cds_id.clone());
                             }
@@ -1543,7 +1546,7 @@ fn write_enriched_annotation(
             let mut prevcdslen=0;
             let mut exon_number=1;
             for record in &mut records {
-                let mut record = record;
+                let record = record;
                 // compute the frame for CDS features
                 if record.feature_type == "CDS" {
                     record.frame = (prevcdslen % 3).to_string();
@@ -1564,7 +1567,7 @@ fn write_enriched_annotation(
                 if record.feature_type != "exon" {
                     for exon in exontree.find(record.start-1..record.end) {
                         if let Some(exon_number) = exon.data().attributes.get("exon_number") {
-                            if let Some(mut en) = record.attributes.get_mut("exon_number") {
+                            if let Some(en) = record.attributes.get_mut("exon_number") {
                                 en.clear();
                                 en.push_str(&mut exon_number.clone());
                             }
@@ -1667,10 +1670,10 @@ fn run() -> Result<()> {
     // get the chromosome names and sizes from the first bam file
     if bamfiles.is_empty() {
         Options::clap().print_help()?;
-        return Err("No bam files were passed in!".into());
+        bail!("No bam files were passed in!");
     }
     if options.debug_outannot_fasta.is_some() && options.genome_file.is_none() {
-        return Err("No genome file was specified!".into());
+        bail!("No genome file was specified!");
     }
     let transcript_type = String::from("transcript");
     let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
@@ -1688,7 +1691,7 @@ fn run() -> Result<()> {
             &options.vizchrmap_file)?
     } else {
         Options::clap().print_help()?;
-        return Err("No annotation file was given!".into());
+        bail!("No annotation file was given!");
     };
     writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
     let refs = match options.sizes_file.clone() {
@@ -1773,12 +1776,7 @@ fn main() {
 
     if let Err(ref e) = run() {
         writeln!(stderr(), "error: {}", e).unwrap();
-        for e in e.iter().skip(1) {
-            writeln!(stderr(), "caused by: {}", e).unwrap();
-        }
-        if let Some(backtrace) = e.backtrace() {
-            writeln!(stderr(), "backtrace: {:?}", backtrace).unwrap();
-        }
+        writeln!(stderr(), "backtrace: {:?}", e.backtrace()).unwrap();
         ::std::process::exit(1);
     }
 }

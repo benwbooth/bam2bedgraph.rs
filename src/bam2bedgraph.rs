@@ -9,6 +9,9 @@ use std::path::{PathBuf, Path};
 use std::vec::Vec;
 use std::ops::Range;
 
+#[macro_use]
+extern crate failure;
+
 extern crate regex;
 use regex::Regex;
 
@@ -27,8 +30,8 @@ extern crate structopt_derive;
 use structopt::StructOpt;
 
 extern crate bam2bedgraph;
-use bam2bedgraph::errors::*;
 use bam2bedgraph::cigar2exons;
+use bam2bedgraph::error::*;
 
 #[macro_use]
 extern crate duct;
@@ -85,7 +88,7 @@ fn open_file(options: &Options,
     let track_name = vec![if !options.trackname.is_empty() {
                               options.trackname.clone()
                           } else {
-                              let p = prefix.as_path().to_str().ok_or("Failed to parse path!")?;
+                              let p = prefix.as_path().to_str().r()?;
                               p.to_string()
                           },
                           if options.split_read && read_number > 0 {
@@ -103,7 +106,7 @@ fn open_file(options: &Options,
     let filename = vec![if !options.out.is_empty() {
                             options.out.clone()
                         } else {
-                            let p = prefix.as_path().to_str().ok_or("Failed to parse path!")?;
+                            let p = prefix.as_path().to_str().r()?;
                             p.to_string()
                         },
                         if options.split_read && read_number > 0 {
@@ -143,7 +146,7 @@ fn write_chr(options: &Options,
         let read_number = key.0;
         let strand = &key.1;
         let filename = open_file(options, read_number, strand, split_strand, fhs)?;
-        let mut f = fhs.get_mut(&filename).r()?;
+        let f = fhs.get_mut(&filename).r()?;
         let file = f.as_mut().r()?;
         let mut writer = BufWriter::new(file);
 
@@ -181,7 +184,7 @@ fn analyze_bam(options: &Options,
                intervals: &Option<BTreeMap<String, IntervalTree<u64, u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
-        return Err(format!("Bam file {} could not be found!", &options.bamfile).into());
+        bail!("Bam file {} could not be found!", &options.bamfile)
     }
     let bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header();
@@ -498,19 +501,16 @@ fn run() -> Result<()> {
     }
     let regex = Regex::new(r"^[usr][usr]$")?;
     if !regex.is_match(&options.split_strand) {
-        return Err(format!("Invalid value for split_strand: \"{}\": values must be \
+        bail!("Invalid value for split_strand: \"{}\": values must be \
                                        one of: u s r uu us ur su ss sr ru rs rr",
-                           options.split_strand)
-            .into());
+                           options.split_strand);
     }
 
     // read in the annotation file
     let mut intervals: Option<BTreeMap<String, IntervalTree<u64, u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
-            return Err(format!("Autostrand Bam file {} could not be found!",
-                               &options.autostrand)
-                .into());
+            bail!("Autostrand Bam file {} could not be found!", &options.autostrand);
         }
         let bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
         let header = bam.header();
@@ -585,12 +585,7 @@ fn main() {
 
     if let Err(ref e) = run() {
         println!("error: {}", e);
-        for e in e.iter().skip(1) {
-            println!("caused by: {}", e);
-        }
-        if let Some(backtrace) = e.backtrace() {
-            println!("backtrace: {:?}", backtrace);
-        }
+        println!("backtrace: {:?}", e.backtrace());
         ::std::process::exit(1);
     }
 }

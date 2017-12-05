@@ -15,7 +15,7 @@ extern crate bio;
 extern crate csv;
 
 #[macro_use]
-extern crate error_chain;
+extern crate failure;
 
 extern crate structopt;
 
@@ -37,28 +37,15 @@ extern crate unindent;
 
 pub mod indexed_annotation;
 
-pub mod errors {
-    error_chain!{
-        foreign_links {
-            Io(::std::io::Error) #[cfg(unix)];
-            Utf8(::std::str::Utf8Error);
-            FromUtf8(::std::string::FromUtf8Error);
-            Regex(::regex::Error);
-            ReaderPath(::rust_htslib::bam::ReaderPathError);
-            Read(::rust_htslib::bam::ReadError);
-            IndexedReaderPath(::rust_htslib::bam::IndexedReaderPathError);
-            ParseInt(::std::num::ParseIntError);
-            Seek(::rust_htslib::bam::SeekError);
-            Fetch(::rust_htslib::bam::FetchError);
-            Interval(::bio::utils::IntervalError);
-            Csv(::csv::Error);
-            Json(::serde_json::Error);
-            StructOpt(::structopt::clap::Error);
-        }
-        errors {
-            NoneError
-        }
+pub mod error {
+    pub type Result<T> = ::std::result::Result<T, ::failure::Error>;
+
+    #[derive(Debug, Fail)]
+    enum NoneError {
+        #[fail(display = "Option value is None")]
+        NoneError {}
     }
+
     pub trait ToResult<T> {
         fn r(self) -> Result<T>;
     }
@@ -66,13 +53,12 @@ pub mod errors {
         fn r(self) -> Result<T> {
             match self {
                 Some(v) => Ok(v),
-                None => Err(ErrorKind::NoneError.into()),
+                None => Err(NoneError::NoneError{}.into()),
             }
         }
     }
 }
-
-use errors::*;
+use ::error::*;
 
 pub mod power_set {
     pub struct PowerSet<'a, T: 'a> {

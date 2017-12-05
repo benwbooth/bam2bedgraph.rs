@@ -4,9 +4,11 @@ use std::io::stderr;
 use std::io::Write;
 use std::collections::HashMap;
 
+#[macro_use] extern crate failure;
+
 extern crate bam2bedgraph;
-use bam2bedgraph::errors::*;
 use bam2bedgraph::indexed_annotation::IndexedAnnotation;
+use bam2bedgraph::error::*;
 
 extern crate bio;
 
@@ -86,12 +88,7 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     if let Err(ref e) = run() {
         writeln!(stderr(), "error: {}", e).unwrap();
-        for e in e.iter().skip(1) {
-            writeln!(stderr(), "caused by: {}", e).unwrap();
-        }
-        if let Some(backtrace) = e.backtrace() {
-            writeln!(stderr(), "backtrace: {:?}", backtrace).unwrap();
-        }
+        writeln!(stderr(), "backtrace: {:?}", e.backtrace()).unwrap();
         ::std::process::exit(1);
     }
 }
