@@ -1,10 +1,6 @@
 #![recursion_limit="128"]
 #![cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity, trivial_regex))]
-use std::io::stderr;
-use std::io::Write;
 use std::collections::HashMap;
-
-#[macro_use] extern crate failure;
 
 extern crate bam2bedgraph;
 use bam2bedgraph::indexed_annotation::IndexedAnnotation;
@@ -87,8 +83,8 @@ fn run() -> Result<()> {
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
     if let Err(ref e) = run() {
-        writeln!(stderr(), "error: {}", e).unwrap();
-        writeln!(stderr(), "backtrace: {:?}", e.backtrace()).unwrap();
+        eprintln!("error: {}", e);
+        eprintln!("backtrace: {:?}", e.backtrace());
         ::std::process::exit(1);
     }
 }

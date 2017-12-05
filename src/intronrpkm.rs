@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, BufRead, Write};
-use std::io::{stdout, stderr, sink};
+use std::io::{stdout, sink};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -313,7 +313,7 @@ fn find_constituitive_splice_pairs(annot: &IndexedAnnotation,
                             let exon2 = &annot.rows[exon_row.1];
                             let region = (exon2.start-1)-exon1.end;
                             if region == 0 {
-                                writeln!(stderr(), "Region between exon1 (row {}) and exon2 (row {}) is zero, skipping constituitive pair", exon_row.0, exon_row.1)?;
+                                eprintln!("Region between exon1 (row {}) and exon2 (row {}) is zero, skipping constituitive pair", exon_row.0, exon_row.1);
                             }
                             else {
                                 exonpairs.push(ConstituitivePair {
@@ -571,13 +571,13 @@ fn reannotate_pair(
                 }
                 iterations += 1;
                 if iterations > max_iterations {
-                    writeln!(stderr(), "More than {} iterations on pair {}", max_iterations, pair_name)?;
+                    eprintln!("More than {} iterations on pair {}", max_iterations, pair_name);
                     continue 'EXON_REGION;
                 }
             }
         }
         if pairs.len() >= 64 {
-            writeln!(stderr(), "Too many possible cassette start/stops for pair {}", pair_name)?;
+            eprintln!("Too many possible cassette start/stops for pair {}", pair_name);
             continue 'EXON_REGION;
         }
         // iterate over the powerset of the start/stop set
@@ -600,7 +600,7 @@ fn reannotate_pair(
                 // make sure we don't go over the max iterations
                 iterations += 1;
                 if iterations > max_iterations {
-                    writeln!(stderr(), "More than {} iterations on pair {}", max_iterations, pair_name)?;
+                    eprintln!("More than {} iterations on pair {}", max_iterations, pair_name);
                     continue 'EXON_REGION;
                 }
             }
@@ -641,7 +641,7 @@ fn reannotate_pair(
         cassettes: cassettes,
         is_retained_intron: is_retained_intron,
     };
-    //writeln!(stderr(), "Writing reannotated pair: {:?}", reannotpair)?;
+    //eprintln!("Writing reannotated pair: {:?}", reannotpair);
     Ok((reannotpair, mapped_reads))
 }
 
@@ -755,7 +755,7 @@ fn reannotate_regions(
                             }
                         }
                         let read_name = String::from(str::from_utf8(read.qname())?);
-                        //writeln!(stderr(), "Looking at read: {}", read_name)?;
+                        //eprintln!("Looking at read: {}", read_name);
                         let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
                         read_pairs.entry((bamfile.clone(),read_name)).or_insert_with(Vec::new).push(exons);
                     }
@@ -787,7 +787,7 @@ fn reannotate_regions(
                 rpkmstats.push(stats);
             }
             Err(ref e) => {
-                writeln!(stderr(), "Got Err in reannotation: {:?}", e)?;
+                eprintln!("Got Err in reannotation: {:?}", e);
             }
         };
     }
@@ -1677,13 +1677,13 @@ fn run() -> Result<()> {
     }
     let transcript_type = String::from("transcript");
     let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
-        writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gff)?;
+        eprintln!("Reading annotation file {:?}", &annotfile_gff);
         IndexedAnnotation::from_gff(
             &annotfile_gff, 
             &options.chrmap_file,
             &options.vizchrmap_file)?
     } else if let Some(annotfile_gtf) = options.annotfile_gtf.clone() {
-        writeln!(stderr(), "Reading annotation file {:?}", &annotfile_gtf)?;
+        eprintln!("Reading annotation file {:?}", &annotfile_gtf);
         IndexedAnnotation::from_gtf(&annotfile_gtf, 
             options.gene_type.get(0).r()?, 
             options.transcript_type.get(0).unwrap_or(&transcript_type),
@@ -1693,7 +1693,7 @@ fn run() -> Result<()> {
         Options::clap().print_help()?;
         bail!("No annotation file was given!");
     };
-    writeln!(stderr(), "Getting refseq lengths from bam file {:?}", &bamfiles[0])?;
+    eprintln!("Getting refseq lengths from bam file {:?}", &bamfiles[0]);
     let refs = match options.sizes_file.clone() {
         Some(sizes_file) => read_sizes_file(&sizes_file, &annot.chrmap)?,
         None => get_bam_refs(&bamfiles[0], &annot.chrmap)?,
@@ -1701,15 +1701,15 @@ fn run() -> Result<()> {
     annot.refs = refs;
     
     if let Some(ref debug_annot_gff) = options.debug_annot_gff {
-        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gff)?;
+        eprintln!("Writing annotation file to {:?}", &debug_annot_gff);
         annot.to_gff(&debug_annot_gff)?; 
     }
     if let Some(ref debug_annot_gtf) = options.debug_annot_gtf {
-        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_gtf)?;
+        eprintln!("Writing annotation file to {:?}", &debug_annot_gtf);
         annot.to_gtf(&debug_annot_gtf)?; 
     }
     if let Some(ref debug_annot_bigbed) = options.debug_annot_bigbed {
-        writeln!(stderr(), "Writing annotation file to {:?}", &debug_annot_bigbed)?;
+        eprintln!("Writing annotation file to {:?}", &debug_annot_bigbed);
         annot.to_bigbed(
             &debug_annot_bigbed, 
             &options.exon_type, 
@@ -1720,21 +1720,21 @@ fn run() -> Result<()> {
     }
     
     // get the total bam reads
-    writeln!(stderr(), "Running samtools idxstats to get total bam read counts")?;
+    eprintln!("Running samtools idxstats to get total bam read counts");
     let total_reads = get_bam_total_reads(&bamfiles)?;
-    writeln!(stderr(), "Found {} total reads", total_reads)?;
+    eprintln!("Found {} total reads", total_reads);
     
     // find the constituitive exons
-    writeln!(stderr(), "Searching for constituitive exons in the annotation")?;
+    eprintln!("Searching for constituitive exons in the annotation");
     let exonpairs = find_constituitive_splice_pairs(&annot, &options)?;
     
     let annot = Arc::new(annot);
     if let Some(ref debug_exon_bigbed) = options.debug_exon_bigbed {
-        writeln!(stderr(), "Writing constituitive pairs to a bigbed file")?;
+        eprintln!("Writing constituitive pairs to a bigbed file");
         write_exon_bigbed(&exonpairs, &annot, &debug_exon_bigbed, &mut trackdb)?;
     }
         
-    writeln!(stderr(), "Reannotating cassette regions")?;
+    eprintln!("Reannotating cassette regions");
     let (reannotated_pairs, mut rpkmstats) = reannotate_regions(
         &annot,
         &exonpairs, 
@@ -1744,27 +1744,27 @@ fn run() -> Result<()> {
         &options,
         &mut trackdb)?;
     if let Some(ref debug_reannot_bigbed) = options.debug_reannot_bigbed {
-        writeln!(stderr(), "Writing reannotation to bigbed")?;
+        eprintln!("Writing reannotation to bigbed");
         write_exon_bigbed(&reannotated_pairs, &annot, &debug_reannot_bigbed, &mut trackdb)?;
     }
     if let Some(ref debug_retained_introns) = options.debug_retained_introns {
-        writeln!(stderr(), "Writing retained introns to file")?;
+        eprintln!("Writing retained introns to file");
         write_retained_introns(&reannotated_pairs, &annot, &debug_retained_introns)?;
     }
     
-    writeln!(stderr(), "Computing RPKM stats")?;
+    eprintln!("Computing RPKM stats");
     if let Some(ref debug_rpkmstats_json) = options.debug_rpkmstats_json {
-        writeln!(stderr(), "Writing RPKM stats to {:?}", &debug_rpkmstats_json)?;
+        eprintln!("Writing RPKM stats to {:?}", &debug_rpkmstats_json);
         let mut output: BufWriter<Box<Write>> = BufWriter::new(
             if debug_rpkmstats_json == "-" { Box::new(stdout()) } 
             else { Box::new(File::create(debug_rpkmstats_json)?) });
             serde_json::to_writer_pretty(&mut output, &rpkmstats)?;
     }
-    writeln!(stderr(), "Writing RPKM stats to {:?}", &options.outfile)?;
+    eprintln!("Writing RPKM stats to {:?}", &options.outfile);
     write_rpkm_stats(&options.outfile, &mut rpkmstats)?;
     
     if let Some(ref outannot) = options.outannot {
-        writeln!(stderr(), "Writing output annotation file")?;
+        eprintln!("Writing output annotation file");
         write_enriched_annotation(&annot, &reannotated_pairs, &outannot, &options, &mut trackdb)?;
     }
     Ok(())
@@ -1775,8 +1775,8 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
 
     if let Err(ref e) = run() {
-        writeln!(stderr(), "error: {}", e).unwrap();
-        writeln!(stderr(), "backtrace: {:?}", e.backtrace()).unwrap();
+        eprintln!("error: {}", e);
+        eprintln!("backtrace: {:?}", e.backtrace());
         ::std::process::exit(1);
     }
 }

@@ -2,7 +2,6 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::io::BufWriter;
-use std::io::stderr;
 use std::fs::File;
 use std::str;
 use std::path::{PathBuf, Path};
@@ -209,11 +208,9 @@ fn analyze_bam(options: &Options,
         }
     }
     if autostrand_pass {
-        writeln!(stderr(),
-                 "Running strand detection phase on {}",
-                 options.bamfile)?;
+        eprintln!("Running strand detection phase on {}", options.bamfile);
     } else {
-        writeln!(stderr(), "Building histograms for {}", options.bamfile)?;
+        eprintln!("Building histograms for {}", options.bamfile);
     }
 
     // build a lookup map for the refseqs
@@ -409,10 +406,10 @@ fn analyze_bam(options: &Options,
         let mut second_best2: (char, i64) = ('\0', 0);
         for i in autostrand_totals {
             if i.1 > 0 {
-                writeln!(stderr(),
+                eprintln!(
                          "Total evidence for read 1 strand type {}: {}",
                          i.0,
-                         i.1)?;
+                         i.1);
             }
             if best1.1 < i.1 {
                 second_best1 = best1;
@@ -423,10 +420,9 @@ fn analyze_bam(options: &Options,
         }
         for i in autostrand_totals2 {
             if i.1 > 0 {
-                writeln!(stderr(),
-                         "Total evidence for read 2 strand type {}: {}",
+                eprintln!("Total evidence for read 2 strand type {}: {}",
                          i.0,
-                         i.1)?;
+                         i.1);
             }
             if best2.1 < i.1 {
                 second_best2 = best2;
@@ -456,9 +452,9 @@ fn analyze_bam(options: &Options,
         };
 
         let best_strand = format!("{}{}", strand1, strand2);
-        writeln!(stderr(),
+        eprintln!(
                  "autostrand_pass found best strand type: {}",
-                 best_strand)?;
+                 best_strand);
 
         // re-run analyzeBam with the strand type indicated
         analyze_bam(options, &best_strand, false, intervals)?;
