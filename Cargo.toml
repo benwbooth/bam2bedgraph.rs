@@ -53,5 +53,9 @@ path = "src/intronrpkm.rs"
 name = "cassette_lengths"
 path = "src/cassette_lengths.rs"
 
+[[bin]]
+name = "rpkm"
+path = "src/rpkm.rs"
+
 [profile.dev]
 opt-level = 2

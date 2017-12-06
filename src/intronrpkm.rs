@@ -5,22 +5,21 @@ use std::vec::Vec;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Range;
-use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{BufReader, BufWriter, BufRead, Write};
+use std::io::{BufWriter, Write};
 use std::io::{stdout, sink};
 use std::path::Path;
 use std::sync::Arc;
+use std::fs::File;
 
 #[macro_use] 
 extern crate failure;
 
 extern crate bam2bedgraph;
+use bam2bedgraph::*;
 use bam2bedgraph::error::*;
-use bam2bedgraph::cigar2exons;
-use bam2bedgraph::power_set::PowerSet;
-use bam2bedgraph::indexed_annotation::IndexedAnnotation;
-use bam2bedgraph::indexed_annotation::Record;
+use bam2bedgraph::power_set::*;
+use bam2bedgraph::indexed_annotation::*;
 
 #[macro_use] 
 extern crate lazy_static;
@@ -45,9 +44,6 @@ extern crate structopt;
 #[macro_use]
 extern crate structopt_derive;
 use structopt::StructOpt;
-
-extern crate linked_hash_map;
-use linked_hash_map::LinkedHashMap;
 
 extern crate serde;
 #[macro_use]
@@ -75,6 +71,9 @@ extern crate duct;
 
 extern crate unindent;
 use unindent::unindent;
+
+extern crate linked_hash_map;
+use linked_hash_map::LinkedHashMap;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "intronrpkm", about = "Analyze RPKM values in intronic space")]
@@ -391,55 +390,6 @@ fn bed2bigbed(
     trackdb.flush()?;
         
     Ok(())
-}
-
-fn read_sizes_file(sizes_file: &str, chrmap: &HashMap<String,String>) -> Result<LinkedHashMap<String,u64>> {
-    let mut refs = HashMap::<String,u64>::new();
-    let f = File::open(&sizes_file)?;
-    let mut file = BufReader::new(&f);
-    let mut buf = String::new();
-    while file.read_line(&mut buf)? > 0 {
-        {   let line = buf.trim_right_matches('\n').trim_right_matches('\r');
-            let cols: Vec<&str> = line.split('\t').collect();
-            if let Some(chr) = cols.get(0) {
-                let chr = String::from(*chr);
-                let chr = chrmap.get(&chr).unwrap_or(&chr);
-                if let Some(size) = cols.get(1) {
-                    if let Ok(size) = size.parse::<u64>() {
-                        refs.insert(chr.clone(), size);
-                    }
-                    else {
-                        bail!("Could not parse size \"{}\" for chr \"{}\" from line \"{}\" of file \"{}\"", size, chr, line, sizes_file);
-                    }
-                }
-            }
-        }
-        buf.clear();
-    }
-    let mut chrs = refs.keys().collect::<Vec<_>>();
-    chrs.sort_by_key(|a| a.as_bytes());
-    let mut sorted_refs = LinkedHashMap::<String,u64>::new();
-    for chr in chrs {
-        let size = refs[chr];
-        sorted_refs.insert(chr.clone(), size);
-    }
-    Ok(sorted_refs)
-}
-
-
-fn get_bam_refs(bamfile: &str, chrmap: &HashMap<String,String>) -> Result<LinkedHashMap<String,u64>> {
-    let mut refs = LinkedHashMap::<String,u64>::new();
-    let bam = IndexedReader::from_path(bamfile)?;
-    let header = bam.header();
-    let target_names = header.target_names();
-    for target_name in target_names {
-        let tid = header.tid(target_name).r()?;
-        let target_len = header.target_len(tid).r()? as u64;
-        let target_name = String::from(std::str::from_utf8(target_name)?);
-        let chr = chrmap.get(&target_name).unwrap_or(&target_name);
-        refs.insert(chr.clone(), target_len);
-    }
-    Ok(refs)
 }
 
 fn reannotate_pair(
@@ -911,27 +861,13 @@ fn write_bigwig(
     Ok(())
 }
 
-fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
-    let mut total_reads = 0u64;
-    for bamfile in bamfiles {
-        let stdout = cmd!("samtools","idxstats",bamfile).read()?;
-        for line in stdout.lines() {
-            let cols: Vec<&str> = line.split('\t').collect();
-            if let Some(reads_str) = cols.get(2) {
-                if let Ok(reads) = reads_str.parse::<u64>() {
-                    total_reads += reads;
-                }
-            }
-        }
-    }
-    Ok(total_reads)
-}
-
 #[derive(Serialize)]
 struct RpkmStats {
     pair_name: String,
     intron_rpkm: f64,
     max_cassette_rpkm: f64,
+    exon1_rpkm: f64,
+    exon2_rpkm: f64,
     total_constituitive_rpkm: f64,
     total_cassette_rpkm: f64,
 }
@@ -944,17 +880,31 @@ fn compute_rpkm(
     -> Result<RpkmStats>
 {
     // rpkm = (10^9 * num_mapped_reads_to_target)/(total_mapped_reads * mappable_target_size_bp)
-    let constituitive_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
-    let mut constituitive_reads = HashSet::<String>::new();
+    let exon1_bases = annot.rows[pair.exon1_row].end-annot.rows[pair.exon1_row].start+1;
+    let exon2_bases = annot.rows[pair.exon2_row].end-annot.rows[pair.exon2_row].start+1;
+    let constituitive_bases = exon1_bases + exon2_bases;
+    let mut exon1_reads = HashSet::<String>::new();
+    let mut exon2_reads = HashSet::<String>::new();
     for read in mapped_reads.find(annot.rows[pair.exon1_row].start-1..annot.rows[pair.exon1_row].end) {
-        constituitive_reads.insert(read.data().clone());
+        exon1_reads.insert(read.data().clone());
     }
     for read in mapped_reads.find(annot.rows[pair.exon2_row].start-1..annot.rows[pair.exon2_row].end) {
-        constituitive_reads.insert(read.data().clone());
+        exon2_reads.insert(read.data().clone());
     }
+    let constituitive_reads = exon1_reads.len() + exon2_reads.len();
+    let exon1_rpkm = if total_reads == 0 || exon1_bases == 0 { 0f64 }
+    else {
+        (1e10f64 * exon1_reads.len() as f64) 
+            / (total_reads as f64 * exon1_bases as f64)
+    };
+    let exon2_rpkm = if total_reads == 0 || exon2_bases == 0 { 0f64 }
+    else {
+        (1e10f64 * exon2_reads.len() as f64) 
+            / (total_reads as f64 * exon2_bases as f64)
+    };
     let total_constituitive_rpkm = if total_reads == 0 || constituitive_bases == 0 { 0f64 } 
     else {
-        (1e10f64 * constituitive_reads.len() as f64) 
+        (1e10f64 * constituitive_reads as f64) 
             / (total_reads as f64 * constituitive_bases as f64)
     };
     
@@ -1014,6 +964,8 @@ fn compute_rpkm(
         pair_name: pair_name,
         intron_rpkm: intron_rpkm,
         max_cassette_rpkm: max_exon_rpkm,
+        exon1_rpkm: exon1_rpkm,
+        exon2_rpkm: exon2_rpkm,
         total_constituitive_rpkm: total_constituitive_rpkm,
         total_cassette_rpkm: total_cassette_rpkm,
     };
@@ -1038,11 +990,13 @@ fn write_rpkm_stats(
         then_with(|| a.pair_name.cmp(&b.pair_name)));
         
     // write the header
-    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
+    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
         "constituitive_pair_name",
         "intron_rpkm/max_cassette_rpkm",
         "intron_rpkm",
         "max_cassette_rpkm",
+        "exon1_rpkm",
+        "exon2_rpkm",
         "total_constituitive_rpkm",
         "total_cassette_rpkm",
     ))?;
@@ -1050,11 +1004,13 @@ fn write_rpkm_stats(
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         if !ratio.is_finite() { continue }
         
-        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n", 
+        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
             rpkm.pair_name, 
             ratio,
             rpkm.intron_rpkm, 
             rpkm.max_cassette_rpkm, 
+            rpkm.exon1_rpkm, 
+            rpkm.exon2_rpkm, 
             rpkm.total_constituitive_rpkm, 
             rpkm.total_cassette_rpkm))?;
     }
