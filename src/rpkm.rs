@@ -258,7 +258,8 @@ fn run() -> Result<()> {
     // get the chromosome names and sizes from the first bam file
     if bamfiles.is_empty() {
         Options::clap().print_help()?;
-        bail!("No bam files were passed in!");
+        eprintln!("\n\nNo bam files were passed in!");
+        std::process::exit(1)
     }
     let transcript_type = String::from("transcript");
     let mut annot = if let Some(annotfile_gff) = options.annotfile_gff.clone() {
@@ -276,7 +277,8 @@ fn run() -> Result<()> {
             &options.vizchrmap_file)?
     } else {
         Options::clap().print_help()?;
-        bail!("No annotation file was given!");
+        eprintln!("\n\nNo annotation file was given!");
+        std::process::exit(1);
     };
     eprintln!("Getting refseq lengths from bam file {:?}", &bamfiles[0]);
     let refs = match options.sizes_file.clone() {

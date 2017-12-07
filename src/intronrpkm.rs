@@ -1623,11 +1623,12 @@ fn run() -> Result<()> {
     // get the chromosome names and sizes from the first bam file
     if bamfiles.is_empty() {
         Options::clap().print_help()?;
-        eprintln!("\nNo bam files were passed in!");
+        eprintln!("\n\nNo bam files were passed in!");
         std::process::exit(1);
     }
     if options.debug_outannot_fasta.is_some() && options.genome_file.is_none() {
-        eprintln!("\nNo genome file was specified!");
+        Options::clap().print_help()?;
+        eprintln!("\n\nNo genome file was specified!");
         std::process::exit(1);
     }
     let transcript_type = String::from("transcript");
@@ -1646,7 +1647,8 @@ fn run() -> Result<()> {
             &options.vizchrmap_file)?
     } else {
         Options::clap().print_help()?;
-        bail!("No annotation file was given!");
+        eprintln!("\n\nNo annotation file was given!");
+        std::process::exit(1);
     };
     eprintln!("Getting refseq lengths from bam file {:?}", &bamfiles[0]);
     let refs = match options.sizes_file.clone() {
