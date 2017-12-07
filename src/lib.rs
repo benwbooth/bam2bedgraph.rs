@@ -31,7 +31,6 @@ extern crate structopt;
 extern crate duct;
 
 extern crate serde;
-extern crate serde_derive;
 extern crate serde_json;
 
 #[macro_use]
@@ -186,3 +185,27 @@ pub fn get_bam_total_reads(bamfiles: &[String]) -> Result<u64> {
     }
     Ok(total_reads)
 }
+
+pub fn get_gene_name(row: usize, annot: &indexed_annotation::IndexedAnnotation) -> Option<String> {
+    let name =
+            annot.rows[row].attributes.get("Name").or_else(||
+            annot.rows[row].attributes.get("ID").or_else(||
+            annot.rows[row].attributes.get("gene_name").or_else(||
+            annot.rows[row].attributes.get("gene").or_else(||
+            annot.rows[row].attributes.get("gene_id")))));
+    name.map(|n| n.to_string())
+}
+
+pub fn get_name(row: usize, annot: &indexed_annotation::IndexedAnnotation) -> Option<String> {
+    let name =
+        annot.rows[row].attributes.get("transcript_name").or_else(||
+        annot.rows[row].attributes.get("transcript").or_else(||
+        annot.rows[row].attributes.get("Name").or_else(||
+        annot.rows[row].attributes.get("ID").or_else(||
+        annot.rows[row].attributes.get("transcript_id").or_else(||
+        annot.rows[row].attributes.get("gene_name").or_else(||
+        annot.rows[row].attributes.get("gene").or_else(||
+        annot.rows[row].attributes.get("gene_id"))))))));
+    name.map(|n| n.to_string())
+}
+

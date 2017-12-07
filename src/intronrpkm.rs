@@ -6,11 +6,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::fs::OpenOptions;
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::io::{stdout, sink};
 use std::path::Path;
 use std::sync::Arc;
-use std::fs::File;
 
 #[macro_use] 
 extern crate failure;
@@ -1024,18 +1024,6 @@ fn write_rpkm_stats(
             rpkm.total_cassette_rpkm))?;
     }
     Ok(())
-}
-
-fn get_name(row: usize, annot: &IndexedAnnotation) -> Option<String> {
-    let name = annot.rows[row].attributes.get("transcript_name").or_else(||
-        annot.rows[row].attributes.get("transcript").or_else(||
-        annot.rows[row].attributes.get("Name").or_else(||
-        annot.rows[row].attributes.get("ID").or_else(||
-        annot.rows[row].attributes.get("transcript_id").or_else(||
-        annot.rows[row].attributes.get("gene_name").or_else(||
-        annot.rows[row].attributes.get("gene").or_else(||
-        annot.rows[row].attributes.get("gene_id"))))))));
-    name.map(|n| n.to_string())
 }
 
 fn get_pair_name(pair: &ConstituitivePair, annot: &IndexedAnnotation) -> String {

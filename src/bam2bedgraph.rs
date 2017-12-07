@@ -185,9 +185,8 @@ fn analyze_bam(options: &Options,
     if !Path::new(&options.bamfile).exists() {
         bail!("Bam file {} could not be found!", &options.bamfile)
     }
-    let bam = Reader::from_path(&options.bamfile)?;
-    let header = bam.header();
-
+    let mut bam = Reader::from_path(&options.bamfile)?;
+    let header = bam.header().clone();
     let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
     let target_names = header.target_names();
     for target_name in target_names {
@@ -508,8 +507,8 @@ fn run() -> Result<()> {
         if !Path::new(&options.autostrand).exists() {
             bail!("Autostrand Bam file {} could not be found!", &options.autostrand);
         }
-        let bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
-        let header = bam.header();
+        let mut bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
+        let header = bam.header().clone();
 
         let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
         let target_names = header.target_names();
