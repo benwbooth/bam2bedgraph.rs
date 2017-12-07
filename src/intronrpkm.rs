@@ -866,6 +866,7 @@ struct RpkmStats {
     pair_name: String,
     intron_rpkm: f64,
     max_cassette_rpkm: f64,
+    cassette_cov: f64,
     exon1_rpkm: f64,
     exon2_rpkm: f64,
     total_constituitive_rpkm: f64,
@@ -908,6 +909,7 @@ fn compute_rpkm(
             / (total_reads as f64 * constituitive_bases as f64)
     };
     
+    let mut cassette_cov = 0f64;
     let mut cassette_reads = HashMap::<String,Vec<Range<u64>>>::new();
     let mut cassette_features = Vec::<(Range<u64>,f64)>::new();
     let mut intron_reads = HashMap::<String,Vec<Range<u64>>>::new();
@@ -933,10 +935,14 @@ fn compute_rpkm(
             for read in &reads {
                 let cassette_read = cassette_reads.entry(read.data().clone()).or_insert_with(Vec::new);
                 cassette_read.push(read.interval().start..read.interval().end);
+                cassette_cov +=
+                    std::cmp::min(cassette.range.end, read.interval().end) as f64 -
+                    std::cmp::max(cassette.range.start, read.interval().start) as f64;
             }
             let exon_rpkm = (1e10f64 * reads.len() as f64) / 
                             (total_reads as f64 * (cassette.range.end-cassette.range.start) as f64);
             cassette_features.push((cassette.range.clone(), exon_rpkm));
+
             if i < pair.cassettes.len()-1 {
                 let intron_range = cassette.range.end..pair.cassettes[i+1].range.start;
                 for read in mapped_reads.find(&intron_range) {
@@ -964,6 +970,7 @@ fn compute_rpkm(
         pair_name: pair_name,
         intron_rpkm: intron_rpkm,
         max_cassette_rpkm: max_exon_rpkm,
+        cassette_cov: cassette_cov / cassette_bases as f64,
         exon1_rpkm: exon1_rpkm,
         exon2_rpkm: exon2_rpkm,
         total_constituitive_rpkm: total_constituitive_rpkm,
@@ -990,11 +997,12 @@ fn write_rpkm_stats(
         then_with(|| a.pair_name.cmp(&b.pair_name)));
         
     // write the header
-    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
         "constituitive_pair_name",
         "intron_rpkm/max_cassette_rpkm",
         "intron_rpkm",
         "max_cassette_rpkm",
+        "cassette_cov",
         "exon1_rpkm",
         "exon2_rpkm",
         "total_constituitive_rpkm",
@@ -1004,11 +1012,12 @@ fn write_rpkm_stats(
         let ratio = rpkm.intron_rpkm / rpkm.max_cassette_rpkm;
         if !ratio.is_finite() { continue }
         
-        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
             rpkm.pair_name, 
             ratio,
             rpkm.intron_rpkm, 
             rpkm.max_cassette_rpkm, 
+            rpkm.cassette_cov,
             rpkm.exon1_rpkm, 
             rpkm.exon2_rpkm, 
             rpkm.total_constituitive_rpkm, 
