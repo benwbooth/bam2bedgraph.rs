@@ -149,8 +149,10 @@ fn write_exon_cov(
             for exon in unmerged.iter() {
                 let mut extend = false;
                 if let Some(ref mut last) = merged.last_mut() {
-                    last.end = exon.end;
-                    extend = true;
+                    if exon.start < last.end && last.start < exon.end {
+                        last.end = exon.end;
+                        extend = true;
+                    }
                 }
                 if !extend {
                     merged.push(exon.clone());
