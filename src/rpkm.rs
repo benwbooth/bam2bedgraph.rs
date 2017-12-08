@@ -60,6 +60,8 @@ struct Options {
     // output file
     #[structopt(long="out", short="o", help = "Output file", name="OUT_FILE", default_value="-")]
     outfile: String,
+    #[structopt(long="merged", short="m", help = "Merged Output file", name="MERGED_OUT_FILE", default_value="-")]
+    merged_outfile: Option<String>,
     // feature types filter
     #[structopt(long="exon_type", help = "The exon type(s) to search for", name="EXON_TYPE")]
     exon_type: Vec<String>,
@@ -108,7 +110,6 @@ fn write_exon_cov(
     let tidmaps = Arc::new(tidmaps);
 
     let mut unmerged_exons = HashMap::<(String,String),Vec<Range<u64>>>::new();
-
     for (gene_row, gene) in annot.rows.iter().enumerate() {
         if options.gene_type.is_empty() || options.gene_type.contains(&gene.feature_type) {
             if let Some(feature_rows) = annot.row2children.get(&gene_row) {
@@ -161,11 +162,47 @@ fn write_exon_cov(
         }
     }
 
+    write_exon_cov_to_file(options,
+        total_reads,
+        &unmerged_exons,
+        &options.outfile,
+        bamfiles,
+        bamstrand,
+        &tidmaps,
+    )?;
+    if let Some(ref merged_outfile) = options.merged_outfile {
+        write_exon_cov_to_file(options,
+            total_reads,
+            &merged_exons,
+            &merged_outfile,
+            bamfiles,
+            bamstrand,
+            &tidmaps,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_exon_cov_to_file(
+    options: &Options,
+    total_reads: u64,
+    exons: &HashMap<(String,String),Vec<Range<u64>>>,
+    outfile: &str,
+    bamfiles: &Vec<String>,
+    bamstrand: &Vec<Option<bool>>,
+    tidmaps: &Arc<HashMap<String,HashMap<String,u32>>>,
+    ) 
+    -> Result<()> 
+{
+    let mut output: BufWriter<Box<Write>> = BufWriter::new(
+        if outfile == "-" { Box::new(stdout()) }
+            else { Box::new(File::create(&outfile)?) });
+
     let num_cpus = num_cpus::get();
     let mut pair_futures = Vec::new();
     let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
-    for key in &keys {
-        let exons = merged_exons[&key.clone()].clone();
+    for key in exons.keys() {
+        let exons = exons[&key.clone()].clone();
         for exon in exons {
             let seqname = key.0.clone();
             let strand = key.1.clone();
@@ -233,10 +270,6 @@ fn write_exon_cov(
         }
     }
     rows.sort();
-
-    let mut output: BufWriter<Box<Write>> = BufWriter::new(
-        if options.outfile == "-" { Box::new(stdout()) }
-            else { Box::new(File::create(&options.outfile)?) });
 
     output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
                                   "seqname",
