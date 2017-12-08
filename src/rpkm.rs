@@ -145,7 +145,7 @@ fn write_exon_cov(
     for key in &keys {
         if let Some(ref mut unmerged) = unmerged_exons.get_mut(&key) {
             unmerged.sort_by_key(|u| u.start);
-            let mut merged = merged_exons.entry((*key).clone()).or_insert_with(Vec::new);
+            let merged = merged_exons.entry((*key).clone()).or_insert_with(Vec::new);
             for exon in unmerged.iter() {
                 let mut extend = false;
                 if let Some(ref mut last) = merged.last_mut() {
