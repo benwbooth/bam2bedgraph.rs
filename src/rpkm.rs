@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::io::stdout;
+use std::ops::Range;
 
 #[macro_use] 
 extern crate failure;
@@ -77,7 +78,6 @@ struct Row {
     strand: String,
     start: u64,
     end: u64,
-    name: String,
     cov: OrderedFloat<f64>,
     rpkm: OrderedFloat<f64>,
 }
@@ -107,9 +107,8 @@ fn write_exon_cov(
     }
     let tidmaps = Arc::new(tidmaps);
 
-    let num_cpus = num_cpus::get();
-    let mut pair_futures = Vec::new();
-    let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
+    let mut unmerged_exons = HashMap::<(String,String),Vec<Range<u64>>>::new();
+
     for (gene_row, gene) in annot.rows.iter().enumerate() {
         if options.gene_type.is_empty() || options.gene_type.contains(&gene.feature_type) {
             if let Some(feature_rows) = annot.row2children.get(&gene_row) {
@@ -128,70 +127,98 @@ fn write_exon_cov(
                             // first get exon start/stop -> transcript associations
                             // and splice start/stop -> transcript associations
                             for exon_row in exon_rows {
-                                let exon = annot.rows[*exon_row].clone();
+                                let exon = &annot.rows[*exon_row];
                                 if options.exon_type.is_empty() || options.exon_type.contains(&exon.feature_type) {
-                                    let chr = exon.seqname.clone();
-                                    let strand = exon.strand.clone();
-                                    let strand_is_plus = strand == "+";
-                                    let annot = annot.clone();
-                                    let bamfiles = bamfiles.clone();
-                                    let bamstrand = bamstrand.clone();
-                                    let tidmaps = tidmaps.clone();
-
-                                    let pair_future = pool.spawn_fn(move ||->Result<Row> {
-                                        let mut exon_cov = 0f64;
-                                        let mut exon_reads = HashSet::<String>::new();
-                                        for (i,bamfile) in bamfiles.iter().enumerate() {
-                                            let read1strand = bamstrand[i];
-                                            let tidmap = &tidmaps[bamfile];
-                                            if let Some(tid) = tidmap.get(&chr) {
-                                                let mut bam = IndexedReader::from_path(bamfile)?;
-                                                bam.fetch(*tid, (exon.start-1) as u32, exon.end as u32)?;
-                                                for read in bam.records() {
-                                                    let read = read?;
-                                                    // make sure the read's strand matches
-                                                    if let Some(is_read1strand) = read1strand {
-                                                        if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
-                                                            continue;
-                                                        }
-                                                    }
-                                                    let read_name = String::from(str::from_utf8(read.qname())?);
-                                                    exon_reads.insert(read_name);
-                                                    //eprintln!("Looking at read: {}", read_name);
-                                                    let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-                                                    for e in exons {
-                                                        if e.start < exon.end && exon.start-1 < e.end {
-                                                            exon_cov +=
-                                                                (std::cmp::min(e.end, exon.end) -
-                                                                std::cmp::max(e.start, exon.start-1)) as f64;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        //get all the bam reads in parallel
-                                        let name = get_gene_name(gene_row, &annot).r()?;
-                                        let exon_length = exon.end-exon.start+1;
-                                        let rpkm = (1e10f64 * exon_reads.len() as f64) / (total_reads as f64 * exon_length as f64);
-                                        Ok(Row{
-                                            seqname: exon.seqname,
-                                            strand: exon.strand,
-                                            start: exon.start-1,
-                                            end: exon.end,
-                                            name,
-                                            cov: OrderedFloat((exon_cov / exon_length as f64)),
-                                            rpkm: OrderedFloat(rpkm),
-                                        })
-                                    });
-                                    pair_futures.push(pair_future);
+                                    let exon = &annot.rows[*exon_row];
+                                    unmerged_exons.entry((exon.seqname.clone(),exon.strand.clone())).
+                                        or_insert_with(Vec::new).push(exon.start-1..exon.end);
                                 }
                             }
                         }
                     }
                 }
             }
-        };
+        }
     }
+    let mut merged_exons = HashMap::<(String,String),Vec<Range<u64>>>::new();
+    let keys = unmerged_exons.keys().map(|k| k.clone()).collect::<Vec<_>>();
+    for key in &keys {
+        if let Some(ref mut unmerged) = unmerged_exons.get_mut(&key) {
+            unmerged.sort_by_key(|u| u.start);
+            let mut merged = merged_exons.entry((*key).clone()).or_insert_with(Vec::new);
+            for exon in unmerged.iter() {
+                let mut extend = false;
+                if let Some(ref mut last) = merged.last_mut() {
+                    last.end = exon.end;
+                    extend = true;
+                }
+                if !extend {
+                    merged.push(exon.clone());
+                }
+            }
+        }
+    }
+
+    let num_cpus = num_cpus::get();
+    let mut pair_futures = Vec::new();
+    let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
+    for key in &keys {
+        let exons = merged_exons[&key.clone()].clone();
+        for exon in exons {
+            let seqname = key.0.clone();
+            let strand = key.1.clone();
+            let chr = seqname.clone();
+            let strand_is_plus = strand == "+";
+            let bamfiles = bamfiles.clone();
+            let bamstrand = bamstrand.clone();
+            let tidmaps = tidmaps.clone();
+
+            let pair_future = pool.spawn_fn(move ||->Result<Row> {
+                let mut exon_cov = 0f64;
+                let mut exon_reads = HashSet::<String>::new();
+                for (i,bamfile) in bamfiles.iter().enumerate() {
+                    let read1strand = bamstrand[i];
+                    let tidmap = &tidmaps[bamfile];
+                    if let Some(tid) = tidmap.get(&chr) {
+                        let mut bam = IndexedReader::from_path(bamfile)?;
+                        bam.fetch(*tid, exon.start as u32, exon.end as u32)?;
+                        for read in bam.records() {
+                            let read = read?;
+                            // make sure the read's strand matches
+                            if let Some(is_read1strand) = read1strand {
+                                if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == strand_is_plus) {
+                                    continue;
+                                }
+                            }
+                            let read_name = String::from(str::from_utf8(read.qname())?);
+                            exon_reads.insert(read_name);
+                            //eprintln!("Looking at read: {}", read_name);
+                            let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+                            for e in exons {
+                                if e.start < exon.end && exon.start < e.end {
+                                    exon_cov +=
+                                        (std::cmp::min(e.end, exon.end) -
+                                        std::cmp::max(e.start, exon.start)) as f64;
+                                }
+                            }
+                        }
+                    }
+                }
+                let exon_length = exon.end-exon.start;
+                let rpkm = (1e10f64 * exon_reads.len() as f64) / (total_reads as f64 * exon_length as f64);
+                Ok(Row{
+                    seqname: seqname,
+                    strand: strand,
+                    start: exon.start,
+                    end: exon.end,
+                    cov: OrderedFloat((exon_cov / exon_length as f64)),
+                    rpkm: OrderedFloat(rpkm),
+                })
+            });
+            pair_futures.push(pair_future);
+        }
+    }
+
     let mut rows = Vec::new();
     for future in pair_futures {
         match future.wait() {
@@ -209,22 +236,20 @@ fn write_exon_cov(
         if options.outfile == "-" { Box::new(stdout()) }
             else { Box::new(File::create(&options.outfile)?) });
 
-    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
                                   "seqname",
                                   "strand",
                                   "start",
                                   "end",
-                                  "name",
                                   "cov",
                                   "rpkm",
     ))?;
     for row in rows {
-        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
             row.seqname,
             row.strand,
             row.start,
             row.end,
-            row.name,
             row.cov,
             row.rpkm,
         ))?;
