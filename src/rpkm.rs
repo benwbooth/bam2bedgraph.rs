@@ -292,7 +292,7 @@ fn write_exon_cov_to_file(
     }
     rows.sort();
 
-    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
+    output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                                   "seqname",
                                   "strand",
                                   "start",
@@ -303,7 +303,7 @@ fn write_exon_cov_to_file(
                                   "gene_id",
     ))?;
     for row in rows {
-        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
+        output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             row.seqname,
             row.strand,
             row.start,
