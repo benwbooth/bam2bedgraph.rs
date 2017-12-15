@@ -82,6 +82,8 @@ struct Row {
     end: u64,
     cov: OrderedFloat<f64>,
     rpkm: OrderedFloat<f64>,
+    transcript_id: String,
+    gene_id: String
 }
 
 fn write_exon_cov(
@@ -109,7 +111,7 @@ fn write_exon_cov(
     }
     let tidmaps = Arc::new(tidmaps);
 
-    let mut unmerged_exons = HashMap::<(String,String),Vec<Range<u64>>>::new();
+    let mut unmerged_exons = HashMap::<(String,String),Vec<(Range<u64>,Option<usize>)>>::new();
     for (gene_row, gene) in annot.rows.iter().enumerate() {
         if options.gene_type.is_empty() || options.gene_type.contains(&gene.feature_type) {
             if let Some(feature_rows) = annot.row2children.get(&gene_row) {
@@ -132,7 +134,7 @@ fn write_exon_cov(
                                 if options.exon_type.is_empty() || options.exon_type.contains(&exon.feature_type) {
                                     let exon = &annot.rows[*exon_row];
                                     unmerged_exons.entry((exon.seqname.clone(),exon.strand.clone())).
-                                        or_insert_with(Vec::new).push(exon.start-1..exon.end);
+                                        or_insert_with(Vec::new).push((exon.start-1..exon.end, Some(*exon_row)));
                                 }
                             }
                         }
@@ -141,22 +143,22 @@ fn write_exon_cov(
             }
         }
     }
-    let mut merged_exons = HashMap::<(String,String),Vec<Range<u64>>>::new();
+    let mut merged_exons = HashMap::<(String,String),Vec<(Range<u64>,Option<usize>)>>::new();
     let keys = unmerged_exons.keys().map(|k| k.clone()).collect::<Vec<_>>();
     for key in &keys {
         if let Some(ref mut unmerged) = unmerged_exons.get_mut(&key) {
-            unmerged.sort_by_key(|u| u.start);
+            unmerged.sort_by_key(|u| u.0.start);
             let merged = merged_exons.entry((*key).clone()).or_insert_with(Vec::new);
             for exon in unmerged.iter() {
                 let mut extend = false;
                 if let Some(ref mut last) = merged.last_mut() {
-                    if exon.start < last.end && last.start < exon.end {
-                        last.end = exon.end;
+                    if exon.0.start < last.0.end && last.0.start < exon.0.end {
+                        last.0.end = exon.0.end;
                         extend = true;
                     }
                 }
                 if !extend {
-                    merged.push(exon.clone());
+                    merged.push((exon.0.clone(), None));
                 }
             }
         }
@@ -169,6 +171,7 @@ fn write_exon_cov(
         bamfiles,
         bamstrand,
         &tidmaps,
+        &annot,
     )?;
     if let Some(ref merged_outfile) = options.merged_outfile {
         write_exon_cov_to_file(options,
@@ -178,6 +181,7 @@ fn write_exon_cov(
             bamfiles,
             bamstrand,
             &tidmaps,
+            &annot,
         )?;
     }
     Ok(())
@@ -186,12 +190,12 @@ fn write_exon_cov(
 fn write_exon_cov_to_file(
     options: &Options,
     total_reads: u64,
-    exons: &HashMap<(String,String),Vec<Range<u64>>>,
+    exons: &HashMap<(String,String),Vec<(Range<u64>,Option<usize>)>>,
     outfile: &str,
     bamfiles: &Vec<String>,
     bamstrand: &Vec<Option<bool>>,
     tidmaps: &Arc<HashMap<String,HashMap<String,u32>>>,
-    ) 
+    annot: &Arc<IndexedAnnotation>) 
     -> Result<()> 
 {
     let mut output: BufWriter<Box<Write>> = BufWriter::new(
@@ -211,6 +215,7 @@ fn write_exon_cov_to_file(
             let bamfiles = bamfiles.clone();
             let bamstrand = bamstrand.clone();
             let tidmaps = tidmaps.clone();
+            let annot = annot.clone();
 
             let pair_future = pool.spawn_fn(move ||->Result<Row> {
                 let mut exon_cov = 0f64;
@@ -220,7 +225,7 @@ fn write_exon_cov_to_file(
                     let tidmap = &tidmaps[bamfile];
                     if let Some(tid) = tidmap.get(&chr) {
                         let mut bam = IndexedReader::from_path(bamfile)?;
-                        bam.fetch(*tid, exon.start as u32, exon.end as u32)?;
+                        bam.fetch(*tid, exon.0.start as u32, exon.0.end as u32)?;
                         for read in bam.records() {
                             let read = read?;
                             // make sure the read's strand matches
@@ -234,24 +239,40 @@ fn write_exon_cov_to_file(
                             //eprintln!("Looking at read: {}", read_name);
                             let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
                             for e in exons {
-                                if e.start < exon.end && exon.start < e.end {
+                                if e.start < exon.0.end && exon.0.start < e.end {
                                     exon_cov +=
-                                        (std::cmp::min(e.end, exon.end) -
-                                        std::cmp::max(e.start, exon.start)) as f64;
+                                        (std::cmp::min(e.end, exon.0.end) -
+                                        std::cmp::max(e.start, exon.0.start)) as f64;
                                 }
                             }
                         }
                     }
                 }
-                let exon_length = exon.end-exon.start;
+                let exon_length = exon.0.end-exon.0.start;
                 let rpkm = (1e10f64 * exon_reads.len() as f64) / (total_reads as f64 * exon_length as f64);
+                let gene_id = match exon.1 {
+                    Some(exon_row) => match get_gene_name(exon_row, &annot) {
+                        Some(name) => name,
+                        None => "".to_string(),
+                    }
+                    None => "".to_string(),
+                };
+                let transcript_id = match exon.1 {
+                    Some(exon_row) => match get_name(exon_row, &annot) {
+                        Some(name) => name,
+                        None => "".to_string(),
+                    }
+                    None => "".to_string(),
+                };
                 Ok(Row{
                     seqname: seqname,
                     strand: strand,
-                    start: exon.start,
-                    end: exon.end,
+                    start: exon.0.start,
+                    end: exon.0.end,
                     cov: OrderedFloat((exon_cov / exon_length as f64)),
                     rpkm: OrderedFloat(rpkm),
+                    transcript_id: transcript_id,
+                    gene_id: gene_id,
                 })
             });
             pair_futures.push(pair_future);
