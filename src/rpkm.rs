@@ -299,6 +299,8 @@ fn write_exon_cov_to_file(
                                   "end",
                                   "cov",
                                   "rpkm",
+                                  "transcript_id",
+                                  "gene_id",
     ))?;
     for row in rows {
         output.write_fmt(format_args!("{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -308,6 +310,8 @@ fn write_exon_cov_to_file(
             row.end,
             row.cov,
             row.rpkm,
+            row.transcript_id,
+            row.gene_id,
         ))?;
     }
     Ok(())
