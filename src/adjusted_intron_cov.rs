@@ -253,7 +253,8 @@ fn write_intron_cov(
             }
             let total_coverage = intron_coverage + exon_coverage;
             let total_bases = intron_bases + exon_bases;
-            let adjusted_total_intron_coverage = intron_coverage + ((intron_coverage as f64 / intron_bases as f64) * exon_bases as f64).floor() as u64;
+            let adjusted_total_intron_coverage = if intron_bases == 0 { 0 }
+                else { intron_coverage + ((intron_coverage as f64 / intron_bases as f64) * exon_bases as f64).floor() as u64 };
             let adjusted_intron_coverage = adjusted_total_intron_coverage as f64 / total_bases as f64;
             let adjusted_psi = adjusted_intron_coverage / (adjusted_intron_coverage + row.intron_conf as f64);
             Ok(OutRow{
