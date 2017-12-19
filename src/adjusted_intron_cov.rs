@@ -81,7 +81,7 @@ struct Row {
     contig: String,
     strand: String,
     event_id: String,
-    gene_id: String,
+    gene_name: String,
     exon1_start: u64,
     exon1_end: u64,
     intron_start: u64,
@@ -92,7 +92,7 @@ struct Row {
     intron_cov: f64,
     exon2_cov: f64,
     intron_conf: u64,
-    psi: f64,
+    psi: String,
 }
 
 #[derive(Debug,Serialize,Deserialize,Clone)]
@@ -100,7 +100,7 @@ struct OutRow {
     contig: String,
     strand: String,
     event_id: String,
-    gene_id: String,
+    gene_name: String,
     exon1_start: u64,
     exon1_end: u64,
     intron_start: u64,
@@ -111,7 +111,7 @@ struct OutRow {
     intron_cov: f64,
     exon2_cov: f64,
     intron_conf: u64,
-    psi: f64,
+    psi: String,
     intron_bases: u64,
     intron_coverage: u64,
     exon_bases: u64,
@@ -160,8 +160,9 @@ fn write_intron_cov(
     let pool = Arc::new(CpuPool::new(if options.cpu_threads==0 {num_cpus} else {options.cpu_threads}));
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(b'\t')
+        .has_headers(false)
         .from_reader(input);
-    for result in rdr.deserialize() {
+    for result in rdr.deserialize().skip(1) {
         let row: Row = result?;
         let row = row.clone();
         let annot = annot.clone();
@@ -181,15 +182,16 @@ fn write_intron_cov(
                         let read = read?;
                         // make sure the read's strand matches
                         if let Some(is_read1strand) = read1strand {
-                            if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == (row.strand == "+")) {
-                                    continue;
-                                }
+                            if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == (row.strand == "+"))
+                            {
+                                continue;
+                            }
                         }
                         let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
                         for exon in exons {
                             if exon.start < row.intron_end && row.intron_start - 1 < exon.end {
                                 for i in max(exon.start, row.intron_start-1)..min(exon.end, row.intron_end) {
-                                    coverage[i as usize] += 1
+                                    coverage[(i-(row.intron_start-1)) as usize] += 1
                                 }
                             }
                         }
@@ -198,13 +200,16 @@ fn write_intron_cov(
             }
             // get the annotated exons
             let mut annotated_exons = Vec::new();
-            if let Some(tree) = annot.tree.get(&row.contig) {
+            let chr = annot.chrmap.get(&row.contig).unwrap_or(&row.contig);
+            if let Some(tree) = annot.tree.get(chr) {
                 annotated_exons = tree.find(row.intron_start - 1..row.intron_end).
                     map(|t| &annot.rows[*t.data()]).
                     filter(|t| t.feature_type == "exon" && t.strand == row.strand).
                     collect::<Vec<_>>();
             }
             annotated_exons.sort_by_key(|e| e.start);
+
+            // merge the annotated exons
             let mut merged_exons = Vec::<Range<u64>>::new();
             for exon in annotated_exons {
                 if let Some(ref mut last) = merged_exons.last_mut() {
@@ -213,7 +218,7 @@ fn write_intron_cov(
                         continue;
                     }
                 }
-                merged_exons.push(exon.start..exon.end);
+                merged_exons.push((exon.start-1)..exon.end);
             }
 
             let mut intron_bases = 0u64;
@@ -221,14 +226,14 @@ fn write_intron_cov(
             let mut exon_bases = 0u64;
             let mut exon_coverage = 0u64;
             for exon in &merged_exons {
-                if row.intron_start < exon.start {
-                    intron_bases += exon.start-row.intron_start;
-                    for j in (row.intron_start-1)..(exon.start-1) {
+                if (row.intron_start-1) < exon.start {
+                    intron_bases += exon.start-(row.intron_start-1);
+                    for j in (row.intron_start-1)..exon.start {
                         intron_coverage += coverage[(j-(row.intron_start-1)) as usize]
                     }
                 }
-                exon_bases += exon.end-(exon.start-1);
-                for j in (exon.start-1)..exon.end {
+                exon_bases += max(row.intron_end, exon.end)-min(row.intron_start-1, exon.start);
+                for j in max(row.intron_start-1, exon.start)..min(row.intron_end, exon.end) {
                     exon_coverage += coverage[(j-(row.intron_start-1)) as usize];
                 }
             }
@@ -252,10 +257,10 @@ fn write_intron_cov(
             let adjusted_intron_coverage = adjusted_total_intron_coverage as f64 / total_bases as f64;
             let adjusted_psi = adjusted_intron_coverage / (adjusted_intron_coverage + row.intron_conf as f64);
             Ok(OutRow{
-                contig: row.contig,
-                strand: row.strand,
-                event_id: row.event_id,
-                gene_id: row.gene_id,
+                contig: row.contig.clone(),
+                strand: row.strand.clone(),
+                event_id: row.event_id.clone(),
+                gene_name: row.gene_name.clone(),
                 exon1_start: row.exon1_start,
                 exon1_end: row.exon1_end,
                 intron_start: row.intron_start,
@@ -266,7 +271,7 @@ fn write_intron_cov(
                 intron_cov: row.intron_cov,
                 exon2_cov: row.exon2_cov,
                 intron_conf: row.intron_conf,
-                psi: row.psi,
+                psi: row.psi.clone(),
                 intron_bases,
                 intron_coverage,
                 exon_bases,
