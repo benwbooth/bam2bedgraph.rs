@@ -119,8 +119,8 @@ struct OutRow {
     total_bases: u64,
     total_coverage: u64,
     adjusted_total_intron_coverage: u64,
-    adjusted_intron_coverage: f64,
-    adjusted_psi: f64,
+    adjusted_intron_coverage: String,
+    adjusted_psi: String,
 }
 
 fn write_intron_cov(
@@ -279,8 +279,8 @@ fn write_intron_cov(
                 total_bases,
                 total_coverage,
                 adjusted_total_intron_coverage,
-                adjusted_intron_coverage: (adjusted_intron_coverage * 100.0).floor() / 100.0,
-                adjusted_psi: (adjusted_psi * 100.0).floor() / 100.0,
+                adjusted_intron_coverage: format!("{:.*}", 2, adjusted_intron_coverage),
+                adjusted_psi: format!("{:.*}", 2, adjusted_psi),
             })
         });
         pair_futures.push(pair_future);
