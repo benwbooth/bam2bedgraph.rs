@@ -9,7 +9,7 @@ failure = "*"
 structopt = "*"
 structopt-derive = "*"
 bio = "*"
-csv = "*"
+csv = "1.0.0-beta.5"
 itertools = "*"
 url = "*"
 lazy_static = "*"
@@ -56,6 +56,10 @@ path = "src/cassette_lengths.rs"
 [[bin]]
 name = "rpkm"
 path = "src/rpkm.rs"
+
+[[bin]]
+name = "adjusted_intron_cov"
+path = "src/adjusted_intron_cov.rs"
 
 [profile.dev]
 opt-level = 2
