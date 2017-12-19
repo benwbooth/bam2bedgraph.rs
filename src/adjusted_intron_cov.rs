@@ -279,8 +279,8 @@ fn write_intron_cov(
                 total_bases,
                 total_coverage,
                 adjusted_total_intron_coverage,
-                adjusted_intron_coverage,
-                adjusted_psi,
+                adjusted_intron_coverage: (adjusted_intron_coverage * 100.0).floor() / 100.0,
+                adjusted_psi: (adjusted_psi * 100.0).floor() / 100.0,
             })
         });
         pair_futures.push(pair_future);
