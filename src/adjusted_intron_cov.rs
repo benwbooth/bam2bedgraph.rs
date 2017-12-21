@@ -3,6 +3,7 @@
 use std::str;
 use std::vec::Vec;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -112,13 +113,14 @@ struct OutRow {
     exon2_cov: f64,
     intron_conf: u64,
     psi: String,
+    read_length: u32,
+    exon_reads: u64,
     intron_bases: u64,
     intron_coverage: u64,
     exon_bases: u64,
     exon_coverage: u64,
     total_bases: u64,
     total_coverage: u64,
-    adjusted_total_intron_coverage: u64,
     adjusted_intron_coverage: String,
     adjusted_psi: String,
 }
@@ -171,15 +173,18 @@ fn write_intron_cov(
         let tidmaps = tidmaps.clone();
         let pair_future = pool.spawn_fn(move || -> Result<OutRow> {
             //get all the bam reads in parallel
+            let mut exon_reads = HashSet::<String>::new();
             let mut coverage = vec![0u64; (row.intron_end-row.intron_start+1) as usize];
+            let mut read_length = 0;
             for (i, bamfile) in bamfiles.iter().enumerate() {
                 let read1strand = bamstrand[i];
                 let tidmap = &tidmaps[bamfile];
                 if let Some(tid) = tidmap.get(&row.contig) {
                     let mut bam = IndexedReader::from_path(bamfile)?;
-                    bam.fetch(*tid, (row.intron_start - 1) as u32, row.intron_end as u32)?;
+                    bam.fetch(*tid, (row.exon1_start - 1) as u32, row.exon2_end as u32)?;
                     for read in bam.records() {
                         let read = read?;
+                        if read_length == 0 { read_length = read.seq().len(); }
                         // make sure the read's strand matches
                         if let Some(is_read1strand) = read1strand {
                             if !(((is_read1strand == read.is_first_in_template()) == !read.is_reverse()) == (row.strand == "+"))
@@ -188,7 +193,16 @@ fn write_intron_cov(
                             }
                         }
                         let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-                        for exon in exons {
+                        for exon in &exons {
+                            if (exon.start < row.exon1_end && row.exon1_start - 1 < exon.end) ||
+                                (exon.start < row.exon2_end && row.exon2_start - 1 < exon.end)
+                            {
+                                let read_name = String::from(str::from_utf8(read.qname())?);
+                                exon_reads.insert(read_name);
+                                break;
+                            }
+                        }
+                        for exon in &exons {
                             if exon.start < row.intron_end && row.intron_start - 1 < exon.end {
                                 for i in max(exon.start, row.intron_start-1)..min(exon.end, row.intron_end) {
                                     coverage[(i-(row.intron_start-1)) as usize] += 1
@@ -253,9 +267,7 @@ fn write_intron_cov(
             }
             let total_coverage = intron_coverage + exon_coverage;
             let total_bases = intron_bases + exon_bases;
-            let adjusted_total_intron_coverage = if intron_bases == 0 { 0 }
-                else { intron_coverage + ((intron_coverage as f64 / intron_bases as f64) * exon_bases as f64).floor() as u64 };
-            let adjusted_intron_coverage = adjusted_total_intron_coverage as f64 / total_bases as f64;
+            let adjusted_intron_coverage = intron_coverage as f64 / intron_bases as f64;
             let adjusted_psi = adjusted_intron_coverage / (adjusted_intron_coverage + row.intron_conf as f64);
             Ok(OutRow{
                 contig: row.contig.clone(),
@@ -273,13 +285,14 @@ fn write_intron_cov(
                 exon2_cov: row.exon2_cov,
                 intron_conf: row.intron_conf,
                 psi: row.psi.clone(),
+                read_length: read_length as u32,
+                exon_reads: exon_reads.len() as u64,
                 intron_bases,
                 intron_coverage,
                 exon_bases,
                 exon_coverage,
                 total_bases,
                 total_coverage,
-                adjusted_total_intron_coverage,
                 adjusted_intron_coverage: format!("{:.*}", 2, adjusted_intron_coverage),
                 adjusted_psi: format!("{:.*}", 2, adjusted_psi),
             })
