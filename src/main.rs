@@ -5,41 +5,57 @@ use std::io::BufWriter;
 use std::fs::File;
 use std::str;
 use std::path::{PathBuf, Path};
-use std::vec::Vec;
-use std::ops::Range;
 
-#[macro_use]
-extern crate failure;
-
-extern crate regex;
 use regex::Regex;
 
-extern crate rust_htslib;
-use rust_htslib::bam::Read;
-use rust_htslib::bam::Reader;
-
-extern crate bio;
 use bio::data_structures::interval_tree::IntervalTree;
 use bio::utils::Interval;
 
-extern crate structopt;
-#[macro_use]
-extern crate structopt_derive;
-
 use structopt::StructOpt;
 
-extern crate bam2bedgraph;
-use bam2bedgraph::cigar2exons;
-use bam2bedgraph::error::*;
+use std::vec::Vec;
+use std::ops::Range;
 
-#[macro_use]
-extern crate duct;
+use rust_htslib::bam::record::Cigar;
+use rust_htslib::bam::record::CigarStringView;
+use rust_htslib::bam::Read;
+use rust_htslib::bam::Reader;
+
+use duct::cmd;
+
+use anyhow::{Result, anyhow};
+
+pub fn cigar2exons(cigar: &CigarStringView, pos: u64) -> Result<Vec<Range<u64>>> {
+    let mut exons = Vec::<Range<u64>>::new();
+    let mut pos = pos;
+    for op in cigar {
+        match op {
+            &Cigar::Match(length) => {
+                pos += length as u64;
+                if length > 0 {
+                    exons.push(Range{start: pos - length as u64, end: pos});
+                }
+            }
+            &Cigar::RefSkip(length) |
+            &Cigar::Del(length) |
+            &Cigar::Equal(length) |
+            &Cigar::Diff(length) => {
+                pos += length as u64;
+            }
+            &Cigar::Ins(_) |
+            &Cigar::SoftClip(_) |
+            &Cigar::HardClip(_) |
+            &Cigar::Pad(_) => (),
+        };
+    }
+    Ok(exons)
+}
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "bam2bedgraph", about = "Convert bam files to bedgraph/bigWig format")]
 struct Options {
-    #[structopt(long = "split", help = "Use CIGAR string to split alignment into separate exons (default)", default_value="true")]
-    split_exons: bool,
+    #[structopt(long = "nosplit", help = "Do not use CIGAR string to split alignment into separate exons")]
+    nosplit_exons: bool,
     #[structopt(long = "read", help = "Split output bedgraph by read number")]
     split_read: bool,
     #[structopt(long = "zero", help = "Pad output bedgraph with zeroes")]
@@ -50,8 +66,8 @@ struct Options {
     proper_only: bool,
     #[structopt(long = "primary", help = "Only output primary read alignments")]
     primary_only: bool,
-    #[structopt(long = "trackline", help = "Output a UCSC track line (default)", default_value="true")]
-    trackline: bool,
+    #[structopt(long = "notrackline", help = "Do not output a UCSC track line")]
+    notrackline: bool,
     #[structopt(long = "bigwig", help = "Output bigwig files (requires bedGraphToBigWig in $PATH)")]
     bigwig: bool,
     #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)")]
@@ -87,7 +103,7 @@ fn open_file(options: &Options,
     let track_name = vec![if !options.trackname.is_empty() {
                               options.trackname.clone()
                           } else {
-                              let p = prefix.as_path().to_str().r()?;
+                              let p = prefix.as_path().to_str().ok_or(anyhow!("NoneError"))?;
                               p.to_string()
                           },
                           if options.split_read && read_number > 0 {
@@ -105,7 +121,7 @@ fn open_file(options: &Options,
     let filename = vec![if !options.out.is_empty() {
                             options.out.clone()
                         } else {
-                            let p = prefix.as_path().to_str().r()?;
+                            let p = prefix.as_path().to_str().ok_or(anyhow!("NoneError"))?;
                             p.to_string()
                         },
                         if options.split_read && read_number > 0 {
@@ -124,7 +140,7 @@ fn open_file(options: &Options,
     // initialize the file if needed
     if !fhs.contains_key(&filename) {
         let mut f = BufWriter::new(File::create(&filename)?);
-        if options.trackline && !options.bigwig {
+        if !options.notrackline && !options.bigwig {
             writeln!(f,
                      "track type=bedGraph name=\"{}\" description=\"{}\" visibility=full",
                      track_name,
@@ -145,8 +161,8 @@ fn write_chr(options: &Options,
         let read_number = key.0;
         let strand = &key.1;
         let filename = open_file(options, read_number, strand, split_strand, fhs)?;
-        let f = fhs.get_mut(&filename).r()?;
-        let file = f.as_mut().r()?;
+        let f = fhs.get_mut(&filename).ok_or(anyhow!("NoneError"))?;
+        let file = f.as_mut().ok_or(anyhow!("NoneError"))?;
         let mut writer = BufWriter::new(file);
 
         // scan the histogram to produce the bedgraph data
@@ -183,15 +199,15 @@ fn analyze_bam(options: &Options,
                intervals: &Option<BTreeMap<String, IntervalTree<u64, u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
-        bail!("Bam file {} could not be found!", &options.bamfile)
+        return Err(anyhow!("Bam file {} could not be found!", &options.bamfile));
     }
     let mut bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header().clone();
     let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
     let target_names = header.target_names();
     for target_name in target_names {
-        let tid = header.tid(target_name).r()?;
-        let target_len = header.target_len(tid).r()?;
+        let tid = header.tid(target_name).ok_or(anyhow!("NoneError"))?;
+        let target_len = header.target_len(tid).ok_or(anyhow!("NoneError"))?;
         let target_name = std::str::from_utf8(target_name)?;
         refs[tid as usize] = (target_len, target_name.to_string());
     }
@@ -259,16 +275,16 @@ fn analyze_bam(options: &Options,
         // skip if it's not unique and we want unique alignments
         if options.uniq {
             let hits = read.aux("NH".to_string().as_bytes());
-            if hits == None || hits.r()?.integer() != 1 {
+            if hits == None || hits.ok_or(anyhow!("NoneError"))?.integer() != 1 {
                 continue;
             }
         }
 
         let mut exons: Vec<Range<u64>> = Vec::new();
         let mut get_exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-        if !options.split_exons && !get_exons.is_empty() {
-            let first = get_exons.get(0).r()?;
-            let last = get_exons.get(get_exons.len() - 1).r()?;
+        if options.nosplit_exons && !get_exons.is_empty() {
+            let first = get_exons.get(0).ok_or(anyhow!("NoneError"))?;
+            let last = get_exons.get(get_exons.len() - 1).ok_or(anyhow!("NoneError"))?;
             // if the exon does not have positive width, skip it
             if last.end - first.start <= 0 {
                 continue;
@@ -284,20 +300,20 @@ fn analyze_bam(options: &Options,
         // let xs = read.aux("XS".as_bytes());
         let strand = 
         //if xs.is_some() {
-         //   str::from_utf8(xs.r()?.string())?
+         //   str::from_utf8(xs.ok_or(anyhow!("NoneError"))?.string())?
         //} else 
         if read_number == 1 {
-                if split_strand.chars().nth(0).r()? == 'r' {
+                if split_strand.chars().nth(0).ok_or(anyhow!("NoneError"))? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
-                } else if split_strand.chars().nth(0).r()? == 's' {
+                } else if split_strand.chars().nth(0).ok_or(anyhow!("NoneError"))? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
                 } else {
                     ""
                 }
             } else if read_number == 2 {
-                if split_strand.chars().nth(1).r()? == 's' {
+                if split_strand.chars().nth(1).ok_or(anyhow!("NoneError"))? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
-                } else if split_strand.chars().nth(1).r()? == 'r' {
+                } else if split_strand.chars().nth(1).ok_or(anyhow!("NoneError"))? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
                 } else {
                     ""
@@ -315,7 +331,7 @@ fn analyze_bam(options: &Options,
             // try to determine the strandedness of the data
             if autostrand_pass {
                 if intervals.is_some() {
-                    let intervals = intervals.as_ref().r()?;
+                    let intervals = intervals.as_ref().ok_or(anyhow!("NoneError"))?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
                         for r in intervals[&refs[lastchr as usize].1].find(&exon) {
                             let overlap_length = std::cmp::min(exon.end, r.interval().end) -
@@ -327,10 +343,10 @@ fn analyze_bam(options: &Options,
                                 'r'
                             };
                             if read_number == 1 {
-                                let at = autostrand_totals.get_mut(&strandtype).r()?;
+                                let at = autostrand_totals.get_mut(&strandtype).ok_or(anyhow!("NoneError"))?;
                                 *at += overlap_length as i64
                             } else if read_number == 2 {
-                                let at2 = autostrand_totals2.get_mut(&strandtype).r()?;
+                                let at2 = autostrand_totals2.get_mut(&strandtype).ok_or(anyhow!("NoneError"))?;
                                 *at2 += overlap_length as i64
                             }
                         }
@@ -346,12 +362,13 @@ fn analyze_bam(options: &Options,
                     refs[read.tid() as usize].0 = exon.end as u32;
                 }
                 if histogram[&tuple].len() < ref_length as usize {
-                    let h = histogram.get_mut(&tuple).r()?;
+                    let h = histogram.get_mut(&tuple).ok_or(anyhow!("NoneError"))?;
                     h.resize(ref_length as usize, 0);
                 }
 
-                for pos in exon {
-                    let h = histogram.get_mut(&tuple).r()?;
+                let h = histogram.get_mut(&tuple).ok_or(anyhow!("NoneError"))?;
+                for pos in std::cmp::max(0u64, exon.start)..std::cmp::min(ref_length as u64, exon.end)
+                {
                     (*h)[pos as usize] += 1;
                 }
             }
@@ -496,16 +513,16 @@ fn run() -> Result<()> {
     }
     let regex = Regex::new(r"^[usr][usr]$")?;
     if !regex.is_match(&options.split_strand) {
-        bail!("Invalid value for split_strand: \"{}\": values must be \
+        return Err(anyhow!("Invalid value for split_strand: \"{}\": values must be \
                                        one of: u s r uu us ur su ss sr ru rs rr",
-                           options.split_strand);
+                           options.split_strand));
     }
 
     // read in the annotation file
     let mut intervals: Option<BTreeMap<String, IntervalTree<u64, u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
-            bail!("Autostrand Bam file {} could not be found!", &options.autostrand);
+            return Err(anyhow!("Autostrand Bam file {} could not be found!", &options.autostrand));
         }
         let mut bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
         let header = bam.header().clone();
@@ -513,8 +530,8 @@ fn run() -> Result<()> {
         let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
         let target_names = header.target_names();
         for target_name in target_names {
-            let tid = header.tid(target_name).r()?;
-            let target_len = header.target_len(tid).r()?;
+            let tid = header.tid(target_name).ok_or(anyhow!("NoneError"))?;
+            let target_len = header.target_len(tid).ok_or(anyhow!("NoneError"))?;
             let target_name = std::str::from_utf8(target_name)?;
             refs[tid as usize] = (target_len, target_name.to_string());
         }
@@ -538,7 +555,7 @@ fn run() -> Result<()> {
             }
 
             let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-            let interval_list = interval_lists.get_mut(&chr).r()?;
+            let interval_list = interval_lists.get_mut(&chr).ok_or(anyhow!("NoneError"))?;
             for exon in exons {
                 interval_list.push((Interval::new(exon)?,
                                     if read.is_reverse() { b'-' } else { b'+' }));
@@ -548,7 +565,7 @@ fn run() -> Result<()> {
             if intervals.is_none() {
                 intervals = Some(BTreeMap::new());
             }
-            let interval = intervals.as_mut().r()?;
+            let interval = intervals.as_mut().ok_or(anyhow!("NoneError"))?;
             let mut tree = IntervalTree::<u64, u8>::new();
             for l in list {
                 tree.insert(l.0.clone(), l.1);
@@ -574,13 +591,8 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn main() {
-    // enable stack traces
+fn main() -> Result<()> {
     std::env::set_var("RUST_BACKTRACE", "full");
-
-    if let Err(ref e) = run() {
-        println!("error: {}", e);
-        println!("backtrace: {:?}", e.backtrace());
-        ::std::process::exit(1);
-    }
+    std::env::set_var("RUST_LIB_BACKTRACE", "1");
+    Ok(run()?)
 }

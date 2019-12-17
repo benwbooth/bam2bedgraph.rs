@@ -2,10 +2,10 @@
 name = "bam2bedgraph"
 version = "1.0.0"
 authors = ["Ben Booth <benwbooth@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 regex = "*"
-failure = "*"
 structopt = "*"
 structopt-derive = "*"
 bio = "*"
@@ -21,45 +21,10 @@ futures-cpupool = "*"
 num_cpus = "*"
 ordered-float = "*"
 duct = "*"
+anyhow = "*"
 
 [dependencies.rust-htslib]
 git = "https://github.com/rust-bio/rust-htslib.git"
 
-[dependencies.serde]
-version = "*"
-features = ["std"]
-
-[dependencies.linked-hash-map]
-version = "*"
-features = ["serde_impl"]
-
-[dependencies.concurrent-hashmap]
-version = "*"
-default-features = false
-
-[lib]
-name = "bam2bedgraph"
-path = "src/lib.rs"
-
-[[bin]]
-name = "bam2bedgraph"
-path = "src/bam2bedgraph.rs"
-
-[[bin]]
-name = "intronrpkm"
-path = "src/intronrpkm.rs"
-
-[[bin]]
-name = "cassette_lengths"
-path = "src/cassette_lengths.rs"
-
-[[bin]]
-name = "rpkm"
-path = "src/rpkm.rs"
-
-[[bin]]
-name = "adjusted_intron_cov"
-path = "src/adjusted_intron_cov.rs"
-
-[profile.dev]
-opt-level = 2
+#[profile.dev]
+#opt-level = 2
