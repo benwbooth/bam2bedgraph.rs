@@ -245,8 +245,8 @@ fn analyze_bam(options: &Options,
     autostrand_totals2.insert('s', 0);
     autostrand_totals2.insert('r', 0);
 
-    let mut read = rust_htslib::bam::record::Record::new();
-    while bam.read(&mut read).is_ok() {
+    for r in bam.records() {
+        let read = r?;
         // skip unaligned reads
         if read.tid() < 0 { continue }
 
