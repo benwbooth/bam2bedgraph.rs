@@ -30,16 +30,16 @@ pub fn cigar2exons(cigar: &CigarStringView, pos: u64) -> Result<Vec<Range<u64>>>
     let mut pos = pos;
     for op in cigar {
         match op {
-            &Cigar::Match(length) => {
+            &Cigar::Match(length) |
+            &Cigar::Equal(length) |
+            &Cigar::Diff(length) => {
                 pos += length as u64;
                 if length > 0 {
                     exons.push(Range{start: pos - length as u64, end: pos});
                 }
             }
             &Cigar::RefSkip(length) |
-            &Cigar::Del(length) |
-            &Cigar::Equal(length) |
-            &Cigar::Diff(length) => {
+            &Cigar::Del(length) => {
                 pos += length as u64;
             }
             &Cigar::Ins(_) |
