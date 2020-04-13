@@ -14,41 +14,27 @@ use bio::utils::Interval;
 use structopt::StructOpt;
 
 use std::vec::Vec;
-use std::ops::Range;
 
-use rust_htslib::bam::record::Cigar;
-use rust_htslib::bam::record::CigarStringView;
 use rust_htslib::bam::Read;
 use rust_htslib::bam::Reader;
+use rust_htslib::bam;
+use rust_htslib::bam::ext::BamRecordExtensions;
 
 use duct::cmd;
+use bio::io::gff::GffType;
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
+use lazy_static::lazy_static;
+use lazy_regex::{regex as re};
 
-pub fn cigar2exons(cigar: &CigarStringView, pos: u64) -> Result<Vec<Range<u64>>> {
-    let mut exons = Vec::<Range<u64>>::new();
-    let mut pos = pos;
-    for op in cigar {
-        match op {
-            &Cigar::Match(length) |
-            &Cigar::Equal(length) |
-            &Cigar::Diff(length) => {
-                pos += length as u64;
-                if length > 0 {
-                    exons.push(Range{start: pos - length as u64, end: pos});
-                }
-            }
-            &Cigar::RefSkip(length) |
-            &Cigar::Del(length) => {
-                pos += length as u64;
-            }
-            &Cigar::Ins(_) |
-            &Cigar::SoftClip(_) |
-            &Cigar::HardClip(_) |
-            &Cigar::Pad(_) => (),
-        };
+pub type Result<T, E = anyhow::Error> = core::result::Result<T, E>;
+trait ToResult<T> {
+    fn r(self) -> Result<T>;
+}
+impl<T> ToResult<T> for Option<T> {
+    fn r(self) -> Result<T> {
+        self.ok_or_else(|| anyhow!("NoneError"))
     }
-    Ok(exons)
 }
 
 #[derive(StructOpt, Debug)]
@@ -72,8 +58,6 @@ struct Options {
     bigwig: bool,
     #[structopt(long = "uniq", help = "Keep only unique alignments (NH:i:1)")]
     uniq: bool,
-    #[structopt(long = "fixchr", help = "Transform chromosome names to be UCSC-compatible")]
-    fixchr: bool,
     #[structopt(help = "Convert a bam file into a bedgraph/bigwig file.", name="BAMFILE")]
     bamfile: String,
     #[structopt(long = "trackname", help = "Name of track for the track line", name="TRACKNAME", default_value="")]
@@ -82,7 +66,7 @@ struct Options {
     out: String,
     #[structopt(long = "autostrand", help = 
         "Attempt to determine the strandedness of the input data using an \
-        annotation file. Must be a .bam file.", name="AUTOSTRAND_FILE", default_value="")]
+        annotation file. Must be a .gff/.gtf file.", name="AUTOSTRAND_FILE", default_value="")]
     autostrand: String,
     #[structopt(long = "split_strand", help =
         "Split output bedgraph by strand: Possible values: u s r uu us ur su ss \
@@ -103,7 +87,7 @@ fn open_file(options: &Options,
     let track_name = vec![if !options.trackname.is_empty() {
                               options.trackname.clone()
                           } else {
-                              let p = prefix.as_path().to_str().ok_or(anyhow!("NoneError"))?;
+                              let p = prefix.as_path().to_str().r()?;
                               p.to_string()
                           },
                           if options.split_read && read_number > 0 {
@@ -121,7 +105,7 @@ fn open_file(options: &Options,
     let filename = vec![if !options.out.is_empty() {
                             options.out.clone()
                         } else {
-                            let p = prefix.as_path().to_str().ok_or(anyhow!("NoneError"))?;
+                            let p = prefix.as_path().to_str().r()?;
                             p.to_string()
                         },
                         if options.split_read && read_number > 0 {
@@ -152,7 +136,7 @@ fn open_file(options: &Options,
 }
 
 fn write_chr(options: &Options,
-             chr: &(u32, String),
+             chr: &(u64, String),
              histogram: &BTreeMap<(i32, String), Vec<i32>>,
              fhs: &mut BTreeMap<String, Option<BufWriter<File>>>,
              split_strand: &str)
@@ -161,8 +145,8 @@ fn write_chr(options: &Options,
         let read_number = key.0;
         let strand = &key.1;
         let filename = open_file(options, read_number, strand, split_strand, fhs)?;
-        let f = fhs.get_mut(&filename).ok_or(anyhow!("NoneError"))?;
-        let file = f.as_mut().ok_or(anyhow!("NoneError"))?;
+        let f = fhs.get_mut(&filename).r()?;
+        let file = f.as_mut().r()?;
         let mut writer = BufWriter::new(file);
 
         // scan the histogram to produce the bedgraph data
@@ -196,36 +180,28 @@ fn write_chr(options: &Options,
 fn analyze_bam(options: &Options,
                split_strand: &str,
                autostrand_pass: bool,
-               intervals: &Option<BTreeMap<String, IntervalTree<u64, u8>>>)
+               intervals: &Option<BTreeMap<String, IntervalTree<i64, u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
-        return Err(anyhow!("Bam file {} could not be found!", &options.bamfile));
+        Err(anyhow!("Bam file {} could not be found!", &options.bamfile))?;
     }
     let mut bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header().clone();
     let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
     let target_names = header.target_names();
     for target_name in target_names {
-        let tid = header.tid(target_name).ok_or(anyhow!("NoneError"))?;
-        let target_len = header.target_len(tid).ok_or(anyhow!("NoneError"))?;
+        let tid = header.tid(target_name).r()?;
+        let target_len = header.target_len(tid).r()?;
         let target_name = std::str::from_utf8(target_name)?;
         refs[tid as usize] = (target_len, target_name.to_string());
     }
 
-    if options.fixchr {
-        for r in &mut refs {
-            let regex = Regex::new(r"^(chr|Zv9_)")?;
-            if regex.is_match(&r.1) {
-                let refname = r.1.to_string();
-                r.1.clear();
-                r.1.push_str(&format!("chr{}", refname));
-            }
-        }
-    }
     if autostrand_pass {
         eprintln!("Running strand detection phase on {}", options.bamfile);
     } else {
-        eprintln!("Building histograms for {}", options.bamfile);
+        eprintln!("Building {} histograms for {}",
+                  if split_strand=="uu" {"unstranded"} else {"stranded"},
+                  options.bamfile);
     }
 
     // build a lookup map for the refseqs
@@ -245,8 +221,8 @@ fn analyze_bam(options: &Options,
     autostrand_totals2.insert('s', 0);
     autostrand_totals2.insert('r', 0);
 
-    for r in bam.records() {
-        let read = r?;
+    let mut read = bam::Record::new();
+    while bam.read(&mut read)? {
         // skip unaligned reads
         if read.tid() < 0 { continue }
 
@@ -259,6 +235,7 @@ fn analyze_bam(options: &Options,
                           &mut fhs,
                           split_strand)?;
             }
+            println!("Reading chr {}", &refs[read.tid() as usize].1);
             histogram.clear();
             lastchr = read.tid();
         }
@@ -275,21 +252,21 @@ fn analyze_bam(options: &Options,
         // skip if it's not unique and we want unique alignments
         if options.uniq {
             let hits = read.aux("NH".to_string().as_bytes());
-            if hits == None || hits.ok_or(anyhow!("NoneError"))?.integer() != 1 {
+            if hits == None || hits.r()?.integer() != 1 {
                 continue;
             }
         }
 
-        let mut exons: Vec<Range<u64>> = Vec::new();
-        let mut get_exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
+        let mut exons: Vec<[i64; 2]> = Vec::new();
+        let mut get_exons = read.aligned_blocks();
         if options.nosplit_exons && !get_exons.is_empty() {
-            let first = get_exons.get(0).ok_or(anyhow!("NoneError"))?;
-            let last = get_exons.get(get_exons.len() - 1).ok_or(anyhow!("NoneError"))?;
+            let first = get_exons.get(0).r()?;
+            let last = get_exons.get(get_exons.len() - 1).r()?;
             // if the exon does not have positive width, skip it
-            if last.end - first.start <= 0 {
+            if last[1] - first[0] <= 0 {
                 continue;
             }
-            exons = vec![Range{start: first.start, end: last.end}];
+            exons = vec![[first[0], last[1]]];
         } else {
             exons.append(&mut get_exons);
         }
@@ -300,20 +277,20 @@ fn analyze_bam(options: &Options,
         // let xs = read.aux("XS".as_bytes());
         let strand = 
         //if xs.is_some() {
-         //   str::from_utf8(xs.ok_or(anyhow!("NoneError"))?.string())?
+         //   str::from_utf8(xs.r()?.string())?
         //} else 
         if read_number == 1 {
-                if split_strand.chars().nth(0).ok_or(anyhow!("NoneError"))? == 'r' {
+                if split_strand.chars().nth(0).r()? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
-                } else if split_strand.chars().nth(0).ok_or(anyhow!("NoneError"))? == 's' {
+                } else if split_strand.chars().nth(0).r()? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
                 } else {
                     ""
                 }
             } else if read_number == 2 {
-                if split_strand.chars().nth(1).ok_or(anyhow!("NoneError"))? == 's' {
+                if split_strand.chars().nth(1).r()? == 's' {
                     if read.is_reverse() { "-" } else { "+" }
-                } else if split_strand.chars().nth(1).ok_or(anyhow!("NoneError"))? == 'r' {
+                } else if split_strand.chars().nth(1).r()? == 'r' {
                     if read.is_reverse() { "+" } else { "-" }
                 } else {
                     ""
@@ -331,11 +308,11 @@ fn analyze_bam(options: &Options,
             // try to determine the strandedness of the data
             if autostrand_pass {
                 if intervals.is_some() {
-                    let intervals = intervals.as_ref().ok_or(anyhow!("NoneError"))?;
+                    let intervals = intervals.as_ref().r()?;
                     if intervals.contains_key(&refs[lastchr as usize].1) {
-                        for r in intervals[&refs[lastchr as usize].1].find(&exon) {
-                            let overlap_length = std::cmp::min(exon.end, r.interval().end) -
-                                                 std::cmp::max(exon.start, r.interval().start);
+                        for r in intervals[&refs[lastchr as usize].1].find(exon[0]..exon[1]) {
+                            let overlap_length = std::cmp::min(exon[1], r.interval().end) -
+                                                 std::cmp::max(exon[0], r.interval().start);
 
                             let strandtype = if read.is_reverse() == (*r.data() == b'-') {
                                 's'
@@ -343,10 +320,10 @@ fn analyze_bam(options: &Options,
                                 'r'
                             };
                             if read_number == 1 {
-                                let at = autostrand_totals.get_mut(&strandtype).ok_or(anyhow!("NoneError"))?;
+                                let at = autostrand_totals.get_mut(&strandtype).r()?;
                                 *at += overlap_length as i64
                             } else if read_number == 2 {
-                                let at2 = autostrand_totals2.get_mut(&strandtype).ok_or(anyhow!("NoneError"))?;
+                                let at2 = autostrand_totals2.get_mut(&strandtype).r()?;
                                 *at2 += overlap_length as i64
                             }
                         }
@@ -358,18 +335,18 @@ fn analyze_bam(options: &Options,
                     histogram.insert(tuple.clone(), Vec::new());
                 }
                 // keep track of chromosome sizes
-                if ref_length < exon.end as u32 {
-                    refs[read.tid() as usize].0 = exon.end as u32;
+                if ref_length < exon[1] as u64 {
+                    refs[read.tid() as usize].0 = exon[1] as u64;
                 }
                 if histogram[&tuple].len() < ref_length as usize {
-                    let h = histogram.get_mut(&tuple).ok_or(anyhow!("NoneError"))?;
+                    let h = histogram.get_mut(&tuple).r()?;
                     h.resize(ref_length as usize, 0);
                 }
 
-                let h = histogram.get_mut(&tuple).ok_or(anyhow!("NoneError"))?;
-                for pos in std::cmp::max(0u64, exon.start)..std::cmp::min(ref_length as u64, exon.end)
+                let h = histogram.get_mut(&tuple).r()?;
+                for pos in std::cmp::max(0i64, exon[0])..std::cmp::min(ref_length as i64, exon[1])
                 {
-                    (*h)[pos as usize] += 1;
+                    h[pos as usize] += 1;
                 }
             }
         }
@@ -489,9 +466,8 @@ fn analyze_bam(options: &Options,
             }
 
             // run bedGraphToBigWig
-            let regex = Regex::new(r"\.bedgraph$")?;
-            let bigwig_file = String::from(regex.replace(fh.0, ".bw"));
-            let sorted_bedgraph = String::from(regex.replace(fh.0, ".sorted.bedgraph"));
+            let bigwig_file = String::from(re!(r"\.bedgraph$").replace(fh.0, ".bw"));
+            let sorted_bedgraph = String::from(re!(r"\.bedgraph$").replace(fh.0, ".sorted.bedgraph"));
             cmd!("sort","-k1,1","-k2,2n","-o", &sorted_bedgraph, fh.0).env("LC_COLLATE","C").run()?;
             cmd!("bedGraphToBigWig",&sorted_bedgraph,&genome_filename,&bigwig_file).run()?;
             // remove the bedgraph file
@@ -511,62 +487,40 @@ fn run() -> Result<()> {
     if options.split_strand.len() == 1 {
         options.split_strand = options.split_strand + "u";
     }
-    let regex = Regex::new(r"^[usr][usr]$")?;
-    if !regex.is_match(&options.split_strand) {
-        return Err(anyhow!("Invalid value for split_strand: \"{}\": values must be \
+    if !re!(r"^[usr][usr]$").is_match(&options.split_strand) {
+        Err(anyhow!("Invalid value for split_strand: \"{}\": values must be \
                                        one of: u s r uu us ur su ss sr ru rs rr",
-                           options.split_strand));
+                           options.split_strand))?;
     }
 
     // read in the annotation file
-    let mut intervals: Option<BTreeMap<String, IntervalTree<u64, u8>>> = None;
+    let mut intervals: Option<BTreeMap<String, IntervalTree<i64, u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
-            return Err(anyhow!("Autostrand Bam file {} could not be found!", &options.autostrand));
+            Err(anyhow!("Autostrand Bam file {} could not be found!", &options.autostrand))?;
         }
-        let mut bam = rust_htslib::bam::Reader::from_path(&options.autostrand)?;
-        let header = bam.header().clone();
-
-        let mut refs = vec![(0, "".to_string()); header.target_count() as usize];
-        let target_names = header.target_names();
-        for target_name in target_names {
-            let tid = header.tid(target_name).ok_or(anyhow!("NoneError"))?;
-            let target_len = header.target_len(tid).ok_or(anyhow!("NoneError"))?;
-            let target_name = std::str::from_utf8(target_name)?;
-            refs[tid as usize] = (target_len, target_name.to_string());
-        }
-        if options.fixchr {
-            for r in &mut refs {
-                let regex = Regex::new(r"^(chr|Zv9_)")?;
-                if regex.is_match(&r.1) {
-                    let refname = r.1.to_string();
-                    r.1.clear();
-                    r.1.push_str(&format!("chr{}", refname));
-                }
-            }
-        }
-
-        let mut interval_lists: BTreeMap<String, Vec<(Interval<u64>, u8)>> = BTreeMap::new();
-        let mut read = rust_htslib::bam::record::Record::new();
-        while bam.read(&mut read).is_ok() {
-            let chr = refs[read.tid() as usize].1.clone();
-            if !interval_lists.contains_key(&chr) {
-                interval_lists.insert(chr.clone(), Vec::new());
+        let mut interval_lists: BTreeMap<String, Vec<(Interval<i64>, u8)>> = BTreeMap::new();
+        let format = if re!(r"(?i)\.gtf").is_match(&options.autostrand) { GffType::GTF2 } else { GffType::GFF3 };
+        let mut reader = bio::io::gff::Reader::from_file(&options.autostrand, format)?;
+        for record in reader.records() {
+            let record = record?;
+            let chr = record.seqname();
+            if !interval_lists.contains_key(chr) {
+                interval_lists.insert(chr.to_string(), Vec::new());
             }
 
-            let exons = cigar2exons(&read.cigar(), read.pos() as u64)?;
-            let interval_list = interval_lists.get_mut(&chr).ok_or(anyhow!("NoneError"))?;
-            for exon in exons {
-                interval_list.push((Interval::new(exon)?,
-                                    if read.is_reverse() { b'-' } else { b'+' }));
-            }
+            let interval_list = interval_lists.get_mut(chr).r()?;
+            interval_list.push((Interval::new(*record.start() as i64..*record.end() as i64)?,
+                                if record.strand().is_some() &&
+                                   record.strand().r()?.strand_symbol() == "-"
+                                { b'-' } else { b'+' }));
         }
         for (chr, list) in &interval_lists {
             if intervals.is_none() {
                 intervals = Some(BTreeMap::new());
             }
-            let interval = intervals.as_mut().ok_or(anyhow!("NoneError"))?;
-            let mut tree = IntervalTree::<u64, u8>::new();
+            let interval = intervals.as_mut().r()?;
+            let mut tree = IntervalTree::<i64, u8>::new();
             for l in list {
                 tree.insert(l.0.clone(), l.1);
             }

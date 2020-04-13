@@ -11,9 +11,9 @@ structopt-derive = "*"
 bio = "*"
 duct = "*"
 anyhow = "*"
-
-[dependencies.rust-htslib]
-git = "https://github.com/rust-bio/rust-htslib.git"
+rust-htslib = "*"
+lazy_static = "*"
+lazy-regex = "*"
 
 #[profile.dev]
 #opt-level = 2
