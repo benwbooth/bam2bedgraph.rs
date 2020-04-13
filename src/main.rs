@@ -27,6 +27,8 @@ use anyhow::anyhow;
 use lazy_static::lazy_static;
 use lazy_regex::{regex as re};
 
+use shell_words;
+
 pub type Result<T, E = anyhow::Error> = core::result::Result<T, E>;
 trait ToResult<T> {
     fn r(self) -> Result<T>;
@@ -379,6 +381,7 @@ fn analyze_bam(options: &Options,
 
     // close the filehandles
     for fh in &mut fhs {
+        eprintln!("Wrote file: {}", fh.0);
         *fh.1 = None;
     }
 
@@ -468,13 +471,21 @@ fn analyze_bam(options: &Options,
             // run bedGraphToBigWig
             let bigwig_file = String::from(re!(r"\.bedgraph$").replace(fh.0, ".bw"));
             let sorted_bedgraph = String::from(re!(r"\.bedgraph$").replace(fh.0, ".sorted.bedgraph"));
-            cmd!("sort","-k1,1","-k2,2n","-o", &sorted_bedgraph, fh.0).env("LC_COLLATE","C").run()?;
-            cmd!("bedGraphToBigWig",&sorted_bedgraph,&genome_filename,&bigwig_file).run()?;
+            let sort_cmd = ["sort","-k1,1","-k2,2n","-o", &sorted_bedgraph, fh.0];
+            eprintln!("Running command: {}", shell_words::join(&sort_cmd));
+            cmd(sort_cmd[0], &sort_cmd[1..]).env("LC_COLLATE","C").run()?;
+            let convert_cmd = ["bedGraphToBigWig",&sorted_bedgraph,&genome_filename,&bigwig_file];
+            eprintln!("Running command: {}", shell_words::join(&convert_cmd));
+            cmd(convert_cmd[0], &convert_cmd[1..]).run()?;
+            eprintln!("Wrote file: {}", bigwig_file);
             // remove the bedgraph file
+            eprintln!("Removing file: {}", fh.0);
             std::fs::remove_file(fh.0)?;
             // remove the sorted bedgraph file
+            eprintln!("Removing file: {}", sorted_bedgraph);
             std::fs::remove_file(&sorted_bedgraph)?;
             // remove the genome file
+            eprintln!("Removing file: {}", genome_filename);
             std::fs::remove_file(&genome_filename)?;
         }
     };
@@ -502,6 +513,8 @@ fn run() -> Result<()> {
         let mut interval_lists: BTreeMap<String, Vec<(Interval<i64>, u8)>> = BTreeMap::new();
         let format = if re!(r"(?i)\.gtf").is_match(&options.autostrand) { GffType::GTF2 } else { GffType::GFF3 };
         let mut reader = bio::io::gff::Reader::from_file(&options.autostrand, format)?;
+
+        eprintln!("Loading autostrand file: {}", options.autostrand);
         for record in reader.records() {
             let record = record?;
             let chr = record.seqname();
@@ -510,7 +523,7 @@ fn run() -> Result<()> {
             }
 
             let interval_list = interval_lists.get_mut(chr).r()?;
-            interval_list.push((Interval::new(*record.start() as i64..*record.end() as i64)?,
+            interval_list.push((Interval::new((*record.start()-1) as i64..*record.end() as i64)?,
                                 if record.strand().is_some() &&
                                    record.strand().r()?.strand_symbol() == "-"
                                 { b'-' } else { b'+' }));

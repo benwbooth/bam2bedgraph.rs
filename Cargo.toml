@@ -14,6 +14,7 @@ anyhow = "*"
 rust-htslib = "*"
 lazy_static = "*"
 lazy-regex = "*"
+shell-words = "*"
 
 #[profile.dev]
 #opt-level = 2
