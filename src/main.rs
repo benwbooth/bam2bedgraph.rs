@@ -28,6 +28,7 @@ use lazy_static::lazy_static;
 use lazy_regex::{regex as re};
 
 use shell_words;
+use rust_htslib::bam::record::Cigar;
 
 pub type Result<T, E = anyhow::Error> = core::result::Result<T, E>;
 trait ToResult<T> {
@@ -37,6 +38,23 @@ impl<T> ToResult<T> for Option<T> {
     fn r(self) -> Result<T> {
         self.ok_or_else(|| anyhow!("NoneError"))
     }
+}
+
+fn aligned_blocks(record: &bam::Record) -> Vec<[i64; 2]> {
+    let mut result = Vec::new();
+    let mut pos = record.pos();
+    for entry in record.cigar().iter() {
+        match entry {
+            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) => {
+                result.push([pos, pos + *len as i64]);
+                pos += *len as i64;
+            }
+            Cigar::Del(len) => pos += *len as i64,
+            Cigar::RefSkip(len) => pos += *len as i64,
+            _ => (),
+        }
+    }
+    result
 }
 
 #[derive(StructOpt, Debug)]
@@ -260,7 +278,7 @@ fn analyze_bam(options: &Options,
         }
 
         let mut exons: Vec<[i64; 2]> = Vec::new();
-        let mut get_exons = read.aligned_blocks();
+        let mut get_exons = aligned_blocks(&read);
         if options.nosplit_exons && !get_exons.is_empty() {
             let first = get_exons.get(0).r()?;
             let last = get_exons.get(get_exons.len() - 1).r()?;
