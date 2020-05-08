@@ -23,20 +23,21 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use duct::cmd;
 use bio::io::gff::GffType;
 
-use anyhow::anyhow;
 use lazy_static::lazy_static;
 use lazy_regex::{regex as re};
 
 use shell_words;
 use rust_htslib::bam::record::Cigar;
 
-pub type Result<T, E = anyhow::Error> = core::result::Result<T, E>;
+use eyre::eyre;
+pub type Report = eyre::Report<color_eyre::Context>;
+pub type Result<T, E = Report> = core::result::Result<T, E>;
 trait ToResult<T> {
     fn r(self) -> Result<T>;
 }
 impl<T> ToResult<T> for Option<T> {
     fn r(self) -> Result<T> {
-        self.ok_or_else(|| anyhow!("NoneError"))
+        self.ok_or_else(|| eyre!("NoneError"))
     }
 }
 
@@ -203,7 +204,7 @@ fn analyze_bam(options: &Options,
                intervals: &Option<BTreeMap<String, IntervalTree<i64, u8>>>)
                -> Result<()> {
     if !Path::new(&options.bamfile).exists() {
-        Err(anyhow!("Bam file {} could not be found!", &options.bamfile))?;
+        Err(eyre!("Bam file {} could not be found!", &options.bamfile))?;
     }
     let mut bam = Reader::from_path(&options.bamfile)?;
     let header = bam.header().clone();
@@ -517,7 +518,7 @@ fn run() -> Result<()> {
         options.split_strand = options.split_strand + "u";
     }
     if !re!(r"^[usr][usr]$").is_match(&options.split_strand) {
-        Err(anyhow!("Invalid value for split_strand: \"{}\": values must be \
+        Err(eyre!("Invalid value for split_strand: \"{}\": values must be \
                                        one of: u s r uu us ur su ss sr ru rs rr",
                            options.split_strand))?;
     }
@@ -526,7 +527,7 @@ fn run() -> Result<()> {
     let mut intervals: Option<BTreeMap<String, IntervalTree<i64, u8>>> = None;
     if !options.autostrand.is_empty() {
         if !Path::new(&options.autostrand).exists() {
-            Err(anyhow!("Autostrand Bam file {} could not be found!", &options.autostrand))?;
+            Err(eyre!("Autostrand Bam file {} could not be found!", &options.autostrand))?;
         }
         let mut interval_lists: BTreeMap<String, Vec<(Interval<i64>, u8)>> = BTreeMap::new();
         let format = if re!(r"(?i)\.gtf").is_match(&options.autostrand) { GffType::GTF2 } else { GffType::GFF3 };
